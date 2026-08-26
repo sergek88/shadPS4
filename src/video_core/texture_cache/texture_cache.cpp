@@ -114,6 +114,16 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
 }
 
 void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
+    // RefreshImage assumes a MaybeCpuDirty image is smaller than a page and only probes its first
+    // 8x8 pixels. Nothing enforces that here, and hashing the guest range of a large image is not
+    // a memcpy: the range is still write-protected for tracking, so every page costs a fault and
+    // its service, on the command processor thread. A full-screen render target measured 893 ms.
+    // Mark such an image as changed instead - at worst that is one extra upload.
+    if (image.info.guest_size > TRACKER_BYTES_PER_PAGE) {
+        image.flags |= ImageFlagBits::CpuDirty;
+        UntrackImage(image_id);
+        return;
+    }
     if (image.hash == 0) {
         // Initialize hash
         const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
