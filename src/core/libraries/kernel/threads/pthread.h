@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include "common/postmortem.h"
 #include <condition_variable>
 #include <forward_list>
 #include <list>
@@ -384,6 +385,8 @@ struct Pthread {
         if (nwaiter_defer > 0) {
             WakeAll();
         }
+        Postmortem::GuestWaitScope wait_scope{"Pthread::Sleep", reinterpret_cast<u64>(this),
+                                              usec};
         if (abstime == THR_RELTIME) {
             constexpr u64 MaxUsec =
                 static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(

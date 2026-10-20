@@ -50,6 +50,8 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::SetAttribute:
     case Opcode::SetTcsGenericAttribute:
     case Opcode::SetPatch:
+    case Opcode::WriteConst:
+    case Opcode::WriteConstX4: // [LIVEVEC4] a store: without this line DCE drops it (03.09)
     case Opcode::StoreBufferU8:
     case Opcode::StoreBufferU16:
     case Opcode::StoreBufferU32:

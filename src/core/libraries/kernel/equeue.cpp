@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include "common/postmortem.h"
+#include <chrono>
+#include <cstdlib>
 #include <thread>
 #include <magic_enum/magic_enum.hpp>
 
@@ -17,6 +21,32 @@
 #include "core/libraries/libs.h"
 
 namespace Libraries::Kernel {
+
+// [EQFIX] SHADPS4_EQFIX=1. TriggerEvent wakes the equeue with notify_one(); when more than one
+// thread waits on the same queue the wrong one can be woken and the GfxEop handler keeps
+// sleeping while its event sits triggered. Default-off so it can be A/B'd on its own.
+namespace eqfix {
+inline bool Enabled() {
+    static const bool on = [] {
+        const char* e = std::getenv("SHADPS4_EQFIX");
+        const bool v = e && e[0] == '1';
+        if (v) {
+            LOG_CRITICAL(Kernel, "EQFIX: armed");
+        }
+        return v;
+    }();
+    return on;
+}
+// Times a waiter found its event ALREADY triggered on the very first predicate evaluation -
+// i.e. a wakeup that a plain notify_one() design could have dropped on the floor.
+inline std::atomic<u64> recovered{0};
+inline void NoteRecovered() {
+    const u64 n = recovered.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 8 || (n % 256) == 0) {
+        LOG_CRITICAL(Kernel, "EQFIX: recovered={}", n);
+    }
+}
+} // namespace eqfix
 
 extern boost::asio::io_context io_context;
 extern void KernelSignalRequest();
@@ -187,9 +217,20 @@ int EqueueInternal::WaitForEvents(OrbisKernelEvent* ev, int num, const OrbisKern
 
     int count = 0;
 
+    // [EQFIX] The trigger flag itself is not lost: condition_variable::wait(lock, pred) evaluates
+    // pred BEFORE blocking, under the same m_mutex TriggerEvent holds, so an event that lands
+    // between the caller entering and the wait starting is still seen. What CAN be lost is the
+    // wakeup itself (notify_one -> wrong waiter), which notify_all above fixes. Count the
+    // first-evaluation hits so the two cases are distinguishable in the log.
+    bool first_eval = true;
     const auto predicate = [&] {
         count = GetTriggeredEvents(ev, num);
-        return count > 0;
+        const bool ready = count > 0;
+        if (ready && first_eval && eqfix::Enabled()) {
+            eqfix::NoteRecovered();
+        }
+        first_eval = false;
+        return ready;
     };
 
     if (micros == 0) {
@@ -225,7 +266,14 @@ bool EqueueInternal::TriggerEvent(u64 ident, s16 filter, void* trigger_data) {
             }
         }
     }
-    m_cond.notify_one();
+    // [EQFIX] notify_all: with several waiters on one queue, notify_one may hand the wakeup to a
+    // thread whose filter does not match the event just triggered, leaving the real consumer
+    // (the GfxEop handler) asleep on an already-triggered event.
+    if (eqfix::Enabled()) {
+        m_cond.notify_all();
+    } else {
+        m_cond.notify_one();
+    }
     return has_found;
 }
 
@@ -467,6 +515,10 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
     }
 
     auto& equeue = kqueues[eq];
+    // [GUESTWAIT] Name the primitive this guest thread parks on, so a host RIP in ntdll stops
+    // being anonymous in the stall snapshot.
+    Postmortem::GuestWaitScope wait_scope{"sceKernelWaitEqueue", static_cast<u64>(eq),
+                                          static_cast<u64>(num)};
 
     TRACE_HINT(equeue->GetName());
     LOG_TRACE(Kernel_Event, "equeue = {} num = {}", equeue->GetName(), num);
@@ -480,7 +532,19 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    *out = equeue->WaitForEvents(ev, num, timo);
+    // [debug] тайминги ожиданий: SHADPS4_TRACEEQ=1
+    static const bool s_trace_eq = std::getenv("SHADPS4_TRACEEQ") != nullptr;
+    if (s_trace_eq) {
+        const auto t0 = std::chrono::steady_clock::now();
+        *out = equeue->WaitForEvents(ev, num, timo);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+        LOG_WARNING(Kernel_Event, "TRACEEQ '{}' num={} timo={} -> got={} waited={}ms",
+                    equeue->GetName(), num, timo ? *timo : 0, *out, ms);
+    } else {
+        *out = equeue->WaitForEvents(ev, num, timo);
+    }
 
     if (*out == 0) {
         return ORBIS_KERNEL_ERROR_ETIMEDOUT;

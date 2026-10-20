@@ -4,6 +4,7 @@
 #pragma once
 
 #include <span>
+#include <thread>
 #include <unordered_map>
 
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -75,6 +76,26 @@ public:
         return present_queue;
     }
 
+    /// Dedicated queue for guest readback downloads; null when the family has
+    /// fewer than 3 queues. Serviced off the GPU thread so a busy parser never
+    /// stalls a faulting guest thread.
+    vk::Queue GetReadbackQueue() const {
+        return readback_queue;
+    }
+
+    bool HasReadbackQueue() const {
+        return static_cast<bool>(readback_queue);
+    }
+
+    /// [TDR SPINRESCUE] Dedicated queue (index 3) for the spin-rescue contour; null unless the
+    /// snoop+ contour is armed and the family exposes >=4 queues. Never falls back to queue 2.
+    vk::Queue GetRescueQueue() const {
+        return rescue_queue;
+    }
+    bool HasRescueQueue() const {
+        return static_cast<bool>(rescue_queue);
+    }
+
     TracyVkCtx GetProfilerContext() const {
         return profiler_context;
     }
@@ -127,6 +148,26 @@ public:
     /// Returns true when VK_EXT_custom_border_color is supported
     bool IsCustomBorderColorSupported() const {
         return custom_border_color;
+    }
+
+    /// Returns true when VK_EXT_external_memory_host is supported
+    bool IsExternalMemoryHostSupported() const {
+        return external_memory_host;
+    }
+
+    /// Returns true when VK_NV_device_diagnostic_checkpoints is supported
+    bool HasNvCheckpoints() const {
+        return nv_checkpoints;
+    }
+
+    /// Returns true when VK_EXT_device_fault is supported
+    bool HasDeviceFault() const {
+        return device_fault;
+    }
+
+    /// Returns the required alignment for imported host pointers
+    u64 GetMinImportedHostPointerAlignment() const {
+        return min_imported_host_pointer_alignment;
     }
 
     /// Returns true when VK_EXT_shader_stencil_export is supported
@@ -487,10 +528,14 @@ private:
     vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT list_restart_features;
     vk::DriverIdKHR driver_id;
     vk::UniqueDebugUtilsMessengerEXT debug_callback{};
+    std::jthread import_probe_thread{}; // [GUESTPROBE] background guest-memory pinning probe
+    vk::UniqueDebugUtilsMessengerEXT addr_bind_messenger{}; // [R8 ADDRBIND]
     std::string vendor_name;
     VmaAllocator allocator{};
     vk::Queue present_queue;
+    vk::Queue rescue_queue; // [TDR SPINRESCUE] index 3, snoop+ only
     vk::Queue graphics_queue;
+    vk::Queue readback_queue;
     std::vector<vk::PhysicalDevice> physical_devices;
     std::vector<std::string> available_extensions;
     std::unordered_map<vk::Format, vk::FormatProperties3> format_properties;
@@ -521,6 +566,12 @@ private:
     bool image_view_min_lod{};
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
+    bool external_memory_host{};
+    bool nv_checkpoints{};
+    bool device_fault{};
+    bool address_binding_report{}; // [R8 ADDRBIND]
+    bool separate_present_queue{};
+    u64 min_imported_host_pointer_alignment{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;
 };

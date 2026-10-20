@@ -11,6 +11,7 @@
 
 #include "common/error.h"
 #include "common/logging/log.h"
+#include "common/postmortem.h"
 #include "common/thread.h"
 #include "ntapi.h"
 #ifdef __APPLE__
@@ -177,6 +178,10 @@ void SetCurrentThreadName(const char* name) {
     if (Libraries::Kernel::g_curthread) {
         Libraries::Kernel::g_curthread->name = name;
     }
+    // [HOSTSTALL] Single choke point for every named thread we create, so the stall snapshot
+    // can suspend and inspect OUR threads too - the gfx parser above all. Guest threads land
+    // here as well and are filtered out at print time by the guest registry.
+    Postmortem::RegisterHostThread(GetCurrentThreadId(), name);
     SetThreadDescription(GetCurrentThread(), UTF8ToUTF16W(name).data());
 }
 

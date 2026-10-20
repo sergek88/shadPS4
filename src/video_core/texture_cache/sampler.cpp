@@ -56,7 +56,9 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
         .maxAnisotropy = max_anisotropy,
         .compareEnable = sampler.depth_compare_func != AmdGpu::DepthCompare::Never,
         .compareOp = LiverpoolToVK::DepthCompare(sampler.depth_compare_func),
-        .minLod = sampler.MinLod(),
+        // The guest programs minLod above maxLod (0.0625 vs 0.0); Vulkan forbids that
+        // and the resulting sampler is undefined, so pin minLod to the ceiling.
+        .minLod = std::min(sampler.MinLod(), sampler.MaxLod()),
         .maxLod = sampler.MaxLod(),
         .borderColor = border_color,
         .unnormalizedCoordinates = false, // Handled in shader due to Vulkan limitations.

@@ -21,6 +21,11 @@ public:
         return &fault_buffer;
     }
 
+    /// [TDR SPINRESCUE] Size of the fault bitmap region (excludes the BDA write-log tail).
+    [[nodiscard]] u64 GetFaultBufferSize() const noexcept {
+        return fault_buffer_size;
+    }
+
     void ProcessFaultBuffer();
 
 private:
@@ -37,6 +42,11 @@ private:
     vk::UniqueDescriptorSetLayout fault_process_desc_layout;
     vk::UniquePipeline fault_process_pipeline;
     vk::UniquePipelineLayout fault_process_pipeline_layout;
+    // [DUALHOME v2] page writeback kernel (VRAM owner -> guest-memory home for journaled pages)
+    vk::UniqueDescriptorSetLayout dual_wb_desc_layout;
+    vk::UniquePipeline dual_wb_pipeline;
+    vk::UniquePipelineLayout dual_wb_pipeline_layout;
+    static constexpr u32 DualWritebackCap = 4096;
 };
 
 } // namespace VideoCore

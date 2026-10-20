@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
+#include "common/postmortem.h"
 #include "common/debug.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
@@ -10,10 +11,15 @@
 
 namespace Vulkan {
 
+// Определён в vk_presenter.cpp: дамп VK_EXT_device_fault после device lost.
+void DumpDeviceFaultImpl(const Instance& instance);
+
 std::mutex Scheduler::submit_mutex;
 
-Scheduler::Scheduler(const Instance& instance)
-    : instance{instance}, master_semaphore{instance}, command_pool{instance, &master_semaphore} {
+Scheduler::Scheduler(const Instance& instance, bool use_present_queue)
+    : instance{instance},
+      submit_queue{use_present_queue ? instance.GetPresentQueue() : instance.GetGraphicsQueue()},
+      master_semaphore{instance}, command_pool{instance, &master_semaphore} {
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
@@ -29,8 +35,28 @@ Scheduler::~Scheduler() {
 }
 
 void Scheduler::BeginRendering(const RenderState& new_state) {
+    Parserprof::g_rp_calls.fetch_add(1, std::memory_order_relaxed);
     if (is_rendering && render_state == new_state) {
         return;
+    }
+    // A pass that begins only because the attachment SET changed is unavoidable; one that
+    // begins for any other reason is a candidate for merging. Counted separately.
+    const bool attach_changed =
+        render_state.num_color_attachments != new_state.num_color_attachments ||
+        render_state.depth_stencil_attachment.image_view !=
+            new_state.depth_stencil_attachment.image_view ||
+        [&] {
+            for (u32 i = 0; i < new_state.num_color_attachments; ++i) {
+                if (render_state.color_attachments[i].image_view !=
+                    new_state.color_attachments[i].image_view) {
+                    return true;
+                }
+            }
+            return false;
+        }();
+    Parserprof::g_rp_starts.fetch_add(1, std::memory_order_relaxed);
+    if (attach_changed) {
+        Parserprof::g_rp_attach.fetch_add(1, std::memory_order_relaxed);
     }
     EndRendering();
     is_rendering = true;
@@ -88,6 +114,7 @@ void Scheduler::EndRendering() {
         return;
     }
     is_rendering = false;
+    Parserprof::g_rp_ends.fetch_add(1, std::memory_order_relaxed);
     current_cmdbuf.endRendering();
 }
 
@@ -102,6 +129,7 @@ void Scheduler::Flush() {
 }
 
 void Scheduler::Finish() {
+    Postmortem::HostWaitScope wait_scope{"Scheduler::Finish", CurrentTick()};
     // When finishing, we need to wait for the submission to have executed on the device.
     const u64 presubmit_tick = CurrentTick();
     SubmitInfo info{};
@@ -110,6 +138,7 @@ void Scheduler::Finish() {
 }
 
 void Scheduler::Wait(u64 tick) {
+    Postmortem::HostWaitScope wait_scope{"Scheduler::Wait", tick, master_semaphore.CurrentTick()};
     if (tick >= master_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
@@ -134,6 +163,8 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 
     current_cmdbuf = command_pool.Commit();
     Check(current_cmdbuf.begin(begin_info));
+    // A fresh command buffer has no pipeline bound - the tracking must start over.
+    InvalidateBoundPipeline();
 
     // Invalidate dynamic state so it gets applied to the new command buffer.
     dynamic_state.Invalidate();
@@ -149,6 +180,10 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
+    // [CSBATCH] the pending batch lands in THIS tick, before the mutex and the tick change
+    if (pre_submit_hook) {
+        pre_submit_hook();
+    }
     std::scoped_lock lk{submit_mutex};
     const u64 signal_value = master_semaphore.NextTick();
 
@@ -161,14 +196,38 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 #endif
 
     EndRendering();
+    // LABELUMA host-availability barrier: makes GPU stores into import-backed
+    // guest RAM formally visible to host reads. NVIDIA's sysmem imports behave
+    // like buffer-markers without it, so it stays opt-in there.
+    {
+        static const bool host_barrier = [] {
+            const char* e = std::getenv("SHADPS4_LABELUMA_HOSTBARRIER");
+            return e && e[0] == '1';
+        }();
+        if (host_barrier) {
+            const vk::MemoryBarrier2 barrier = {
+                .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+                .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+            };
+            current_cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+                .memoryBarrierCount = 1,
+                .pMemoryBarriers = &barrier,
+            });
+        }
+    }
     Check(current_cmdbuf.end());
 
     const vk::Semaphore timeline = master_semaphore.Handle();
     info.AddSignal(timeline, signal_value);
 
-    static constexpr std::array<vk::PipelineStageFlags, 2> wait_stage_masks = {
+    // AddWait allows up to 3 wait semaphores; a 2-entry mask array let
+    // pWaitDstStageMask read past the end for the third one.
+    static constexpr std::array<vk::PipelineStageFlags, 3> wait_stage_masks = {
         vk::PipelineStageFlagBits::eAllCommands,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits::eAllCommands,
     };
 
     const vk::TimelineSemaphoreSubmitInfo timeline_si = {
@@ -190,7 +249,21 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     };
 
     ImGui::Core::TextureManager::Submit();
-    auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    // No logging here: this runs under the global submit mutex, and even a
+    // filtered-out LOG_INFO call lengthens the critical section for every
+    // submitter including the presenter.
+    auto submit_result = submit_queue.submit(submit_info, info.fence);
+    if (submit_result == vk::Result::eErrorDeviceLost && instance.HasNvCheckpoints()) {
+        // The checkpoint markers survive the device loss: the last entries
+        // name the exact command the GPU was executing when it hung.
+        const auto checkpoints = submit_queue.getCheckpointDataNV();
+        for (const auto& cp : checkpoints) {
+            LOG_CRITICAL(Render_Vulkan, "CHECKPOINT: stage={} marker={:#x}",
+                         vk::to_string(cp.stage),
+                         reinterpret_cast<u64>(cp.pCheckpointMarker));
+        }
+        DumpDeviceFaultImpl(instance);
+    }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
     master_semaphore.Refresh();

@@ -13,6 +13,12 @@
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdlib>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 #include <fmt/ranges.h>
 
@@ -420,6 +426,202 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
 
     return std::move(instance);
+}
+
+// [R8 ADDRBIND] SHADPS4_ADDRBIND=1: lock-free ring of driver bind/unbind events, written from
+// the driver callback thread, read once at DEVFAULT. Answers whether the faulting shader-heap VA
+// was ever bound (H1 wild jump) or was unbound just before the fault (H3 WDDM residency churn).
+bool AddrBindEnabled() {
+    static const bool on = [] {
+        const char* e = std::getenv("SHADPS4_ADDRBIND");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
+
+namespace AddrBind {
+struct Entry {
+    u64 base;
+    u64 size;
+    u32 unbind;
+    u32 obj_type;
+    u64 handle; // [ATTRIB] VkObject handle of pObjects[0]
+    u64 tick;   // [ATTRIB] draw-scheduler tick current at the event (g_draw_tick)
+    u64 seq;    // [ATTRIB] delivery number, so the dump can order bind/unbind pairs
+};
+// [ATTRIB] 06.09: the ring used to drop every base >= 0x4'0000'0000 - i.e. every buffer/image
+// allocation - so a DEVFAULT ReadInvalid in that space (0x46..., 0x4d44fa000) could never be
+// attributed. Keep everything; the ring is large enough for the churn (~300 reg/unreg per 30
+// ticks) and DumpCovering names the object(s) whose [base, base+size) covers a fault address.
+constexpr u32 kRingSize = 65536; // power of two
+static std::array<Entry, kRingSize> ring{};
+static std::atomic<u32> head{0};
+static std::atomic<u64> total_events{0}; // all deliveries
+std::atomic<u64> unbind_shader_region{0};
+std::atomic<u64> g_draw_tick{0}; // set by Rasterizer::Draw/Dispatch (scheduler.CurrentTick())
+
+struct CoverInfo {
+    u64 base;
+    u64 size;
+    bool found;
+};
+CoverInfo DumpCovering(u64 addr) {
+    CoverInfo info{};
+    const u32 h = head.load(std::memory_order_relaxed);
+    const u32 total = std::min<u32>(h, kRingSize);
+    u32 printed = 0;
+    for (u32 n = 1; n <= total && printed < 24; ++n) {
+        const Entry& e = ring[(h - n) & (kRingSize - 1)];
+        if (e.base == 0 || addr < e.base || addr >= e.base + e.size) {
+            continue;
+        }
+        LOG_CRITICAL(Render_Vulkan,
+                     "ADDRBIND-COVER {:#x}: {} base={:#x} size={:#x} objtype={} handle={:#x} "
+                     "tick={} seq={} (age {} events)",
+                     addr, e.unbind ? "unbind" : "bind", e.base, e.size, e.obj_type, e.handle,
+                     e.tick, e.seq, h - (h - n));
+        ++printed;
+        if (!info.found) {
+            info = CoverInfo{e.base, e.size, true};
+        }
+    }
+    if (printed == 0) {
+        LOG_CRITICAL(Render_Vulkan, "ADDRBIND-COVER {:#x}: no bind/unbind in the ring covers it",
+                     addr);
+    }
+    return info;
+}
+
+u64 TotalEvents() {
+    return total_events.load(std::memory_order_relaxed);
+}
+
+// [BINDLOG] the VA history of one Vulkan object handle (newest first): where the image a
+// draw actually bound lives, next to the fault address and the unbinds that cover it.
+static std::mutex live_mutex;
+static std::unordered_map<u64, std::pair<u64, u64>> live_by_handle;
+
+void DumpHandle(u64 handle) {
+    {
+        std::scoped_lock lk{live_mutex};
+        if (const auto it = live_by_handle.find(handle); it != live_by_handle.end()) {
+            LOG_CRITICAL(Render_Vulkan, "ADDRBIND-LIVE {:#x}: base={:#x} size={:#x} end={:#x}",
+                         handle, it->second.first, it->second.second,
+                         it->second.first + it->second.second);
+        } else {
+            LOG_CRITICAL(Render_Vulkan, "ADDRBIND-LIVE {:#x}: not bound now", handle);
+        }
+    }
+    const u32 h = head.load(std::memory_order_relaxed);
+    const u32 total = std::min<u32>(h, kRingSize);
+    u32 printed = 0;
+    for (u32 n = 1; n <= total && printed < 8; ++n) {
+        const Entry& e = ring[(h - n) & (kRingSize - 1)];
+        if (e.handle != handle) {
+            continue;
+        }
+        LOG_CRITICAL(Render_Vulkan,
+                     "ADDRBIND-HANDLE {:#x}: {} base={:#x} size={:#x} objtype={} tick={} seq={} "
+                     "(age {} events)",
+                     handle, e.unbind ? "unbind" : "bind", e.base, e.size, e.obj_type, e.tick,
+                     e.seq, n);
+        ++printed;
+    }
+    if (printed == 0) {
+        LOG_CRITICAL(Render_Vulkan, "ADDRBIND-HANDLE {:#x}: no event in the ring", handle);
+    }
+}
+
+void DumpRing() {
+    const u32 h = head.load(std::memory_order_relaxed);
+    const u32 total = std::min<u32>(h, kRingSize);
+    LOG_CRITICAL(Render_Vulkan, "ADDRBIND-SUM: unbind_shader_region={} ring_total={} events={}",
+                 unbind_shader_region.load(std::memory_order_relaxed), h,
+                 total_events.load(std::memory_order_relaxed));
+    if (h == 0) {
+        // Distinguishes "no events arrived" from "dump not wired up".
+        LOG_CRITICAL(Render_Vulkan, "ADDRBIND-RING: empty");
+        return;
+    }
+    u32 printed = 0;
+    for (u32 n = 1; n <= total && printed < 256; ++n) {
+        const Entry& e = ring[(h - n) & (kRingSize - 1)];
+        if (e.base == 0) {
+            continue;
+        }
+        LOG_CRITICAL(Render_Vulkan,
+                     "ADDRBIND[{}]: {} base={:#x} size={:#x} objtype={} handle={:#x} tick={}", n,
+                     e.unbind ? "unbind" : "bind", e.base, e.size, e.obj_type, e.handle, e.tick);
+        ++printed;
+    }
+}
+} // namespace AddrBind
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL AddrBindCallback(
+    vk::DebugUtilsMessageSeverityFlagBitsEXT, vk::DebugUtilsMessageTypeFlagsEXT,
+    const vk::DebugUtilsMessengerCallbackDataEXT* cb_data, void*) {
+    // Walk the pNext chain honestly for the address-binding payload.
+    const auto* chain = static_cast<const vk::BaseInStructure*>(cb_data->pNext);
+    const vk::DeviceAddressBindingCallbackDataEXT* bind = nullptr;
+    while (chain != nullptr) {
+        if (chain->sType == vk::StructureType::eDeviceAddressBindingCallbackDataEXT) {
+            bind = reinterpret_cast<const vk::DeviceAddressBindingCallbackDataEXT*>(chain);
+            break;
+        }
+        chain = chain->pNext;
+    }
+    if (bind == nullptr) {
+        return VK_FALSE;
+    }
+    const u64 base = bind->baseAddress;
+    // Verification: the first 4 deliveries are logged UNCONDITIONALLY (before any filter) -
+    // at startup pipeline creation must shower binds; silence here means the driver emits none.
+    const u64 ev = AddrBind::total_events.fetch_add(1, std::memory_order_relaxed);
+    if (ev < 4) {
+        LOG_CRITICAL(Render_Vulkan, "ADDRBIND event[{}]: {} base={:#x} size={:#x}", ev,
+                     bind->bindingType == vk::DeviceAddressBindingTypeEXT::eUnbind ? "unbind"
+                                                                                   : "bind",
+                     base, bind->size);
+    }
+    const bool unbind = bind->bindingType == vk::DeviceAddressBindingTypeEXT::eUnbind;
+    if (unbind && base >= 0x2'0000'0000ULL && base < 0x2'0010'0000ULL) {
+        AddrBind::unbind_shader_region.fetch_add(1, std::memory_order_relaxed);
+    }
+    const u32 i = AddrBind::head.fetch_add(1, std::memory_order_relaxed) & (AddrBind::kRingSize - 1);
+    const u32 obj_type =
+        cb_data->objectCount ? static_cast<u32>(cb_data->pObjects[0].objectType) : 0u;
+    const u64 handle = cb_data->objectCount ? cb_data->pObjects[0].objectHandle : 0ull;
+    AddrBind::ring[i] = {base,   bind->size, unbind ? 1u : 0u, obj_type, handle,
+                         AddrBind::g_draw_tick.load(std::memory_order_relaxed), ev};
+    // [BINDLOG] live handle -> VA map: the ring forgets binds older than 65536 events (level
+    // load), the map does not. Objects are keyed by handle; a handle value is reused by the
+    // driver only after the previous object's unbind erased it.
+    if (handle != 0) {
+        std::scoped_lock lk{AddrBind::live_mutex};
+        if (unbind) {
+            AddrBind::live_by_handle.erase(handle);
+        } else {
+            AddrBind::live_by_handle[handle] = {base, bind->size};
+        }
+    }
+    return VK_FALSE;
+}
+
+vk::UniqueDebugUtilsMessengerEXT CreateAddrBindMessenger(vk::Instance instance) {
+    const vk::DebugUtilsMessengerCreateInfoEXT ci = {
+        .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
+                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
+                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,
+        .messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding,
+        .pfnUserCallback = AddrBindCallback,
+    };
+    auto [res, m] = instance.createDebugUtilsMessengerEXTUnique(ci);
+    if (res != vk::Result::eSuccess) {
+        LOG_CRITICAL(Render_Vulkan, "ADDRBIND: messenger failed: {}", vk::to_string(res));
+        return {};
+    }
+    return std::move(m);
 }
 
 vk::UniqueDebugUtilsMessengerEXT CreateDebugCallback(vk::Instance instance) {

@@ -13,6 +13,7 @@
 
 #include <miniz.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <future>
@@ -22,7 +23,10 @@
 namespace {
 
 std::mutex submit_mutex{};
-u32 num_requests{};
+// [Stage2] atomic: the IO thread decrements (:66) and tests (:50) without submit_mutex
+// while WriteVector increments (:164) under it - a lost update leaves the IO thread in a
+// permanent busy-spin exactly in the fatal window.
+std::atomic<u32> num_requests{};
 std::condition_variable_any request_cv{};
 std::queue<std::packaged_task<void()>> req_queue{};
 std::mutex m_request{};
@@ -40,14 +44,15 @@ void ProcessIO(const std::stop_token& stoken) {
     while (!stoken.stop_requested()) {
         {
             std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(request_cv, lk, stoken, [&] { return num_requests; });
+            Common::CondvarWait(request_cv, lk, stoken,
+                                [&] { return num_requests.load(std::memory_order_acquire) != 0; });
         }
 
         if (stoken.stop_requested()) {
             break;
         }
 
-        while (num_requests) {
+        while (num_requests.load(std::memory_order_acquire)) {
             std::packaged_task<void()> request{};
             {
                 std::scoped_lock lock{m_request};

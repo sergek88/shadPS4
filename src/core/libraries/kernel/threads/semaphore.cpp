@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include "common/postmortem.h"
+#include <cstdlib>
+#include "common/thread.h"
 #include <condition_variable>
 #include <list>
 #include <mutex>
@@ -328,7 +332,23 @@ s32 PS4_SYSV_ABI sceKernelWaitSema(OrbisKernelSema sem, s32 needCount, u32* pTim
     if (!orbis_sems.is_allocated(sem)) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return orbis_sems[sem]->Wait(true, needCount, pTimeout);
+    
+    Postmortem::GuestWaitScope wait_scope{"sceKernelWaitSema", static_cast<u64>(sem.index),
+                                          static_cast<u64>(needCount)};
+    static const bool s_trace_sw = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
+    const auto tw0 = s_trace_sw ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
+    const auto sw_ret = orbis_sems[sem]->Wait(true, needCount, pTimeout);
+    if (s_trace_sw) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - tw0)
+                            .count();
+        if (ms > 300) {
+            LOG_WARNING(Kernel_Event, "TRACEWAIT sema: '{}' {}ms",
+                        Common::GetCurrentThreadName(), ms);
+        }
+    }
+    return sw_ret;
 }
 
 s32 PS4_SYSV_ABI sceKernelSignalSema(OrbisKernelSema sem, s32 signalCount) {
@@ -386,6 +406,7 @@ s32 PS4_SYSV_ABI posix_sem_destroy(PthreadSem** sem) {
 }
 
 s32 PS4_SYSV_ABI posix_sem_wait(PthreadSem** sem) {
+    Postmortem::GuestWaitScope wait_scope{"posix_sem_wait", reinterpret_cast<u64>(sem)};
     if (sem == nullptr || *sem == nullptr) {
         *__Error() = POSIX_EINVAL;
         return -1;

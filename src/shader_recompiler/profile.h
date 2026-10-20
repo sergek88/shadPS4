@@ -51,6 +51,10 @@ struct Profile {
     bool needs_unorm_fixup{};
     bool needs_clip_distance_emulation{};
     bool supports_shader_stencil_export{};
+    // [Stage2 SPINGUARD] Purely a cache discriminator: SPINGUARD changes emitted SPIR-V (in-loop
+    // BDA reads become Volatile), so it must be part of the Profile compared by the disk cache
+    // (profile.bin) - otherwise a warm PCACHE would hand back non-guarded binaries (false A/B).
+    bool spinguard{};
 
     bool operator==(const Profile&) const = default;
 };

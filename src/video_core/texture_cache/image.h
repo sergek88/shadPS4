@@ -34,6 +34,7 @@ enum ImageFlagBits : u32 {
     GpuModified = 1 << 3, ///< Contents have been modified from the GPU
     Registered = 1 << 6,  ///< True when the image is registered
     Picked = 1 << 7,      ///< Temporary flag to mark the image as picked
+    RingPooled = 1 << 8,  ///< [R9] member of the video-ring image pool (see SHADPS4_RINGPOOL)
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 
@@ -179,6 +180,12 @@ public:
     u64 lru_id{};
     u64 tick_accessed_last{};
     u64 hash{};
+    // [D1 RINGMIG_DL] Tick versioning of GPU-modified state. modified_tick is stamped by the
+    // single SetGpuModified helper on every GpuModified setter; downloaded_tick is bumped when a
+    // sync download writes the backing. downloaded_tick >= modified_tick => the CPU backing is
+    // current, so the ring image can migrate WITHOUT a fresh download (fast path).
+    u64 modified_tick{0};
+    u64 downloaded_tick{0};
 
     struct {
         u32 texture : 1;

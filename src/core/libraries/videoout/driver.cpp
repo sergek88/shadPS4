@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <string>
+#include "common/postmortem.h"
+#include <cstdlib>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -15,6 +19,12 @@
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
+
+namespace AmdGpu {
+// Count of flip requests fully materialized into the present queue.
+// Written here, read by Liverpool's guest frame pacing.
+extern std::atomic<u64> g_flips_materialized;
+} // namespace AmdGpu
 
 namespace Libraries::VideoOut {
 
@@ -234,11 +244,47 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req) {
+    // [GUESTSTALL-TIME] The presenter actually flipping. Paired with g_last_flip_req_ms it
+    // separates "the guest stopped asking" from "we stopped delivering".
+    Postmortem::g_last_flip_ms.store(Postmortem::NowMs(), std::memory_order_relaxed);
+    if (Postmortem::g_flips_total.fetch_add(1, std::memory_order_relaxed) == 0) {
+        // [STARTUP] First frame on screen: the number Sergey actually perceives.
+        const s64 t0 = Postmortem::g_startup_ms.load(std::memory_order_relaxed);
+        LOG_CRITICAL(Lib_VideoOut,
+                     "STARTUP: backimp_init={}ms pcache_preload={}ms first_frame_at={}ms",
+                     Postmortem::g_startup_backimp_ms.load(std::memory_order_relaxed),
+                     Postmortem::g_startup_pcache_ms.load(std::memory_order_relaxed),
+                     t0 ? Postmortem::NowMs() - t0 : -1);
+        std::string marks;
+        for (u32 i = 0; i < Postmortem::kMaxStartupMarks; ++i) {
+            const char* n = Postmortem::g_startup_marks[i].name.load(std::memory_order_acquire);
+            if (n == nullptr) {
+                break;
+            }
+            marks += fmt::format(" {}={}ms", n,
+                                 Postmortem::g_startup_marks[i].ms.load(
+                                     std::memory_order_relaxed));
+        }
+        LOG_CRITICAL(Lib_VideoOut, "STARTUP2:{} | modules={} first_flip_at={}ms", marks,
+                     Postmortem::g_module_count.load(std::memory_order_relaxed),
+                     t0 ? Postmortem::NowMs() - t0 : -1);
+    }
+    {
+        static const bool s_fc3 = std::getenv("SHADPS4_STUCKLOG") != nullptr;
+        if (s_fc3) {
+            LOG_WARNING(Lib_VideoOut, "FLIPCHAIN flip");
+        }
+    }
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 
-    // Present the frame.
-    presenter->Present(req.frame);
+    // Present the frame. A null frame means the presenter could not obtain a
+    // pool slot in time (GPU jammed by a level-load workload); the image is
+    // dropped but the flip must still complete, otherwise the guest never
+    // advances and the jam becomes permanent.
+    if (req.frame != nullptr) {
+        presenter->Present(req.frame);
+    }
 
     // Update flip status.
     auto* port = req.port;
@@ -254,7 +300,21 @@ void VideoOutDriver::Flip(const Request& req) {
             --flip_status.gc_queue_num;
         }
         --flip_status.flip_pending_num;
+        Postmortem::g_flip_pending.store(flip_status.flip_pending_num, std::memory_order_relaxed);
+        Postmortem::g_flip_gc_queue.store(flip_status.gc_queue_num, std::memory_order_relaxed);
     }
+
+    // Reset the previous flip label BEFORE waking the guest: the guest can
+    // resubmit into the just-flipped buffer within microseconds of the flip
+    // event, and a label write racing this reset was observed to either trip
+    // the "Out of order flip IRQ" assert or silently unlock a buffer the
+    // guest had just re-locked.
+    if (port->prev_index != -1) {
+        port->buffer_labels[port->prev_index] = 0;
+        port->SignalVoLabel();
+    }
+    // save to prev buf index
+    port->prev_index = req.index;
 
     // Trigger flip events for the port.
     for (auto event : port->flip_events) {
@@ -267,14 +327,6 @@ void VideoOutDriver::Flip(const Request& req) {
                                         (req.flip_arg << 16)));
         }
     }
-
-    // Reset prev flip label
-    if (port->prev_index != -1) {
-        port->buffer_labels[port->prev_index] = 0;
-        port->SignalVoLabel();
-    }
-    // save to prev buf index
-    port->prev_index = req.index;
 }
 
 void VideoOutDriver::DrawBlankFrame() {
@@ -303,9 +355,22 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
         }
         ++port->flip_status.flip_pending_num; // integral GPU and CPU pending flips counter
         port->flip_status.submit_tsc = Libraries::Kernel::sceKernelReadTsc();
+        // [GUESTSTALL] Mirror the pipeline depth where the watchdog can read it lock-free.
+        Postmortem::g_flip_pending.store(port->flip_status.flip_pending_num,
+                                         std::memory_order_relaxed);
+        Postmortem::g_flip_gc_queue.store(port->flip_status.gc_queue_num,
+                                          std::memory_order_relaxed);
     }
 
     if (!is_eop) {
+        // A direct flip must not outrun the gfx parser: during level loads
+        // the guest flips a static loading image while the parser is chewing
+        // through a giant DCB for minutes (pipeline compiles). Delivering
+        // those flip events early lets the game's render-frame ring run ahead
+        // of EOP ticks that are still unwritten, and its FrameBegin asserts
+        // on a zero tick. Real hardware never lags minutes behind the CPU,
+        // so waiting for the ring to drain restores its de-facto ordering.
+        liverpool->WaitForGfxRingIdlePulse();
         // Non EOP flips can arrive from any thread so ask GPU thread to perform them
         liverpool->SendCommand([=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop); });
     } else {
@@ -334,6 +399,10 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         .index = index,
         .eop = is_eop,
     });
+    Postmortem::g_flips_materialized.store(
+        AmdGpu::g_flips_materialized.fetch_add(1, std::memory_order_release) + 1,
+        std::memory_order_relaxed);
+    Postmortem::g_present_queued.store(requests.size(), std::memory_order_relaxed);
 }
 
 void VideoOutDriver::PresentThread(std::stop_token token) {
@@ -350,8 +419,10 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         if (!requests.empty()) {
             const auto request = requests.front();
             requests.pop();
+            Postmortem::g_present_queued.store(requests.size(), std::memory_order_relaxed);
             return request;
         }
+        Postmortem::g_present_queued.store(0, std::memory_order_relaxed);
         return {};
     };
 
@@ -398,6 +469,10 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                             (vblank_status.count << 16)));
                 }
             }
+
+            // [GUESTSTALL-TIME] The tick we PRODUCE, independent of anyone waiting on it.
+            Postmortem::g_vblank_tick_ms.store(Postmortem::NowMs(), std::memory_order_relaxed);
+            Postmortem::g_vblank_ticks.fetch_add(1, std::memory_order_relaxed);
 
             // Update vblank status
             vblank_status.count++;

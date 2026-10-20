@@ -565,8 +565,20 @@ s32 PS4_SYSV_ABI sceAudioOutOutput(s32 handle, void* ptr) {
 
     s32 samples_sent = 0;
     {
+        static const bool s_aprof = std::getenv("SHADPS4_STUCKLOG") != nullptr;
+        const auto ta0 = s_aprof ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
         std::unique_lock lock{port->mutex};
         port->output_cv.wait(lock, [&] { return !port->output_ready || port->closing; });
+        if (s_aprof) {
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - ta0)
+                                .count();
+            if (ms > 100) {
+                LOG_WARNING(Lib_AudioOut, "AUDIOPROF: output drain-wait {}ms port={} thread='{}'",
+                            ms, port_id, Common::GetCurrentThreadName());
+            }
+        }
 
         if (port->closing) {
             LOG_DEBUG(Lib_AudioOut, "Port {} closed while waiting for drain", port_id);

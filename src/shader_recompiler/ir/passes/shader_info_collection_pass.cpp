@@ -93,6 +93,12 @@ void Visit(Info& info, const IR::Inst& inst) {
     case IR::Opcode::WriteLane:
         info.uses_group_ballot = true;
         break;
+    case IR::Opcode::Barrier:                // [CSSPLIT] OpControlBarrier(Workgroup): group-shape bound
+    case IR::Opcode::WorkgroupMemoryBarrier: // [CSSPLIT] only meaningful with LDS, declined anyway
+        // DeviceMemoryBarrier (S_WAITCNT under SHADPS4_WAITCNT_FENCE) is deliberately not counted:
+        // a device-scope fence does not depend on the workgroup shape.
+        info.uses_barrier = true;
+        break;
     case IR::Opcode::Discard:
     case IR::Opcode::DiscardCond:
         info.has_discard = true;
@@ -126,6 +132,12 @@ void Visit(Info& info, const IR::Inst& inst) {
     case IR::Opcode::LaneId:
         info.uses_lane_id = true;
         break;
+    case IR::Opcode::WriteConstX4: // [LIVEVEC4] same bookkeeping as WriteConst
+    case IR::Opcode::WriteConst:
+        info.uses_live_write = true;
+        info.uses_dma = true;
+        break;
+    case IR::Opcode::ReadConstX4: // [LIVEVEC4] same bookkeeping as ReadConst
     case IR::Opcode::ReadConst:
         if (!info.uses_dma) {
             info.buffers.push_back({
@@ -136,7 +148,13 @@ void Visit(Info& info, const IR::Inst& inst) {
                 .buffer_type = BufferType::Flatbuf,
             });
         }
-        if (inst.Flags<u32>() != 0) {
+        if (inst.Flags<u32>() == Info::LiveReadConstFlag) {
+            info.readconst_types |= Info::ReadConstType::Live;
+        } else if (inst.Flags<u32>() == Info::PollReadConstFlag) {
+            // [POLLJ] a live read that also stamps the polled page into the presence window
+            info.readconst_types |= Info::ReadConstType::Live;
+            info.uses_poll_read = true;
+        } else if (inst.Flags<u32>() != 0) {
             info.readconst_types |= Info::ReadConstType::Immediate;
         } else {
             info.readconst_types |= Info::ReadConstType::Dynamic;
@@ -162,9 +180,14 @@ void CollectShaderInfoPass(IR::Program& program, const Profile& profile) {
         }
     }
 
-    if (!EmulatorSettings.IsDirectMemoryAccessEnabled()) {
+    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || IsDmaMutedByBisect(info.pgm_hash)) {
+        if (info.uses_dma && EmulatorSettings.IsDirectMemoryAccessEnabled()) {
+            LOG_CRITICAL(Render_Recompiler, "NODMA: shader {:#x} kept off the raw address path",
+                         info.pgm_hash);
+        }
         info.uses_dma = false;
         info.readconst_types = Info::ReadConstType::None;
+        info.uses_poll_read = false;
     }
 
     if (info.uses_dma) {

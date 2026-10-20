@@ -1,0 +1,54 @@
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+// [DUALHOME v2] Copy every page the raw-address journal listed this batch from its VRAM owner
+// (primary page table entry) into its guest-memory home (window entry behind the table), so the
+// CPU sees GPU results after the batch retires without per-dword replay. One workgroup per page,
+// 16 KiB = 1024 uvec4, 256 threads x 4 uvec4 each. Window entries with bit 63 set are sink
+// pages (not armed) and are skipped.
+#version 450
+#extension GL_ARB_gpu_shader_int64 : enable
+#extension GL_EXT_buffer_reference : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) buffer pagetable_buf {
+    uint64_t pagetable[];
+};
+
+layout(std430, binding = 1) buffer list_buf {
+    uint page_list[];
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer PageData {
+    uvec4 data[];
+};
+
+void main() {
+    const uint page_i = gl_WorkGroupID.x;
+    const uint count = min(page_list[0], LIST_CAP);
+    if (page_i >= count) {
+        return;
+    }
+    const uint page = page_list[1u + page_i];
+    if (page >= NUMPAGES) {
+        return;
+    }
+    const uint64_t primary = pagetable[page];
+    if (primary == 0ul) {
+        return;
+    }
+    if (page < WINDOW_BASE_PAGE || page - WINDOW_BASE_PAGE >= WINDOW_PAGES) {
+        return;
+    }
+    const uint widx = NUMPAGES + (page - WINDOW_BASE_PAGE);
+    const uint64_t home = pagetable[widx];
+    if ((home >> 63) != 0ul) {
+        return; // sink: page not armed
+    }
+    PageData src = PageData(primary);
+    PageData dst = PageData(home);
+    for (uint i = gl_LocalInvocationID.x; i < 1024u; i += 256u) {
+        dst.data[i] = src.data[i];
+    }
+}

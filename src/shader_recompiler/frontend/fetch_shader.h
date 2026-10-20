@@ -72,4 +72,8 @@ const u32* GetFetchShaderCode(const Info& info, u32 sgpr_base);
 
 std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info);
 
+/// [FETCHMEMO] hit/miss counters of the parsed-fetch-shader memo (SHADPS4_FETCHMEMO=1).
+u64 FetchMemoHits();
+u64 FetchMemoMisses();
+
 } // namespace Shader::Gcn

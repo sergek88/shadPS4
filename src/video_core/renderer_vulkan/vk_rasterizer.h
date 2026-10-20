@@ -3,11 +3,15 @@
 
 #pragma once
 
+#include <functional>
+#include <span>
+
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vk_shader_hle.h"
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace AmdGpu {
@@ -47,6 +51,9 @@ public:
                       VAddr count_address);
 
     void DispatchDirect();
+    // Flush the command buffer every N draws so a level-load frame never
+    // exceeds the host GPU watchdog budget (see vk_rasterizer.cpp).
+    void ChunkHeavyFrame();
     void DispatchIndirect(VAddr address, u32 offset, u32 size);
 
     void ScopeMarkerBegin(const std::string_view& str, bool from_guest = false);
@@ -69,6 +76,29 @@ public:
     u64 Flush();
     void Finish();
     void OnSubmit();
+    /// [EOPRETIRE] Queues the pending fault-buffer processing (BDA-journal replay op) on the
+    /// current tick now; the EOP/ReleaseMem sites call it before deferring the fence.
+    void ProcessFaultBufferIfPending();
+
+    /// Runs the callback on the priority-ops thread once the GPU retires every
+    /// command recorded so far. Used to hold guest-visible completion interrupts
+    /// (EOP/RELEASE_MEM) until the work they announce has actually executed.
+    void DeferSignalToRetire(std::function<void()>&& func);
+
+    /// [CSBATCH] Called by ExecuteShaderHLE for the skinning worker: resolves the dispatch's 7
+    /// ranges through the buffer cache NOW (guest order) and appends one job to the pending
+    /// batch. false = decline -> the dispatch takes the normal path (the batch is flushed first).
+    bool SkinBatchAppend(const Shader::Info& cs, const AmdGpu::ComputeProgram& p);
+    /// [CSBATCH] Records the pending batch as ONE host dispatch. Called before any other GPU
+    /// command and from the scheduler's pre-submit hook; one `empty` test when idle.
+    void FlushSkinBatch(SkinBatch::Reason why);
+
+    /// [CSBATCH-DEFERLABEL] Queue a guest completion label behind the pending batch instead of
+    /// flushing the batch for it (run 359: flush{label}=60695 -> subs/batch=1, no batching at
+    /// all). Returns false when there is nothing pending, and the caller signals as it does
+    /// today. The queued labels are registered as priority operations right after the batch is
+    /// recorded, so they retire on the tick that executes it.
+    bool SkinBatchDeferLabel(std::function<void()>&& fence);
 
     PipelineCache& GetPipelineCache() {
         return pipeline_cache;
@@ -115,6 +145,19 @@ private:
     bool IsComputeImageCopy(const Pipeline* pipeline);
     bool IsComputeImageClear(const Pipeline* pipeline);
 
+    /// The uses_dma block of BindResources (once-per-flip sweep / DMASYNC_ZONE), extracted so
+    /// the [CSBATCH] append keeps today's per-worker-dispatch cadence. Behaviour unchanged.
+    void SyncDmaZones();
+    // [CSBATCH] internals (vk_rasterizer.cpp)
+    void RecordSkinDispatch(std::span<const SkinJobGpu> jobs, std::span<const u32> group_map,
+                            std::span<const vk::BufferMemoryBarrier2> barriers, bool prebar,
+                            bool postbar, SkinBatch::Reason why);
+    bool SkinBatchShadowMaybe(const SkinJobGpu& j, u32 n, VAddr out_base, u64 out_size,
+                              const VideoCore::Buffer& out_owner);
+    void SkinBatchShadowArm(); // after the guest dispatch of the shadowed job
+    void SkinBatchShadowCompare();
+    void SkinBatchReport(); // 5 s census
+
 private:
     friend class VideoCore::BufferCache;
 
@@ -146,7 +189,13 @@ private:
     using ImageBindingInfo = std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc>;
     boost::container::static_vector<ImageBindingInfo, Shader::NUM_IMAGES> image_bindings;
     bool fault_process_pending{};
+    // Frame stamp of the last full mapped-memory sync for DMA shaders (see BindResources).
+    u64 dma_sync_stamp{~0ULL};
     bool attachment_feedback_loop{};
+    u32 draws_since_flush{0};
+    SkinBatch skin_batch; // [CSBATCH]
+    /// [CSBATCH-DEFERLABEL] guest completion labels waiting for the batch's tick.
+    std::vector<std::function<void()>> skin_batch_labels;
 };
 
 } // namespace Vulkan

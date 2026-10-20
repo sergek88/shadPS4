@@ -228,6 +228,10 @@ static constexpr const BinaryInfo& SearchBinaryInfo(const u32* code) {
     UNREACHABLE_MSG("Shader binary info not found.");
 }
 
+// [BININFO 11.09] ЗАКРЫТО. Замер 524: token=47212 scans=0 — полного сканирования не бывает
+// вовсе, все шейдеры начинаются с токена 0xBEEB03FF и уходят по дешёвому пути в три инструкции.
+// Памятка по адресу заменяла их умножением, сдвигом, маской и четырьмя сравнениями и давала
+// 55,1 FPS против 55,7 у контроля. Рычага здесь нет; статья `compile` тратится не тут.
 static constexpr Shader::ShaderParams GetParams(const auto& sh) {
     const auto* code = sh.template Address<u32*>();
     const auto& bininfo = SearchBinaryInfo(code);

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
+#include "common/logging/log.h"
 #include "common/assert.h"
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -45,12 +48,64 @@ const u32* GetFetchShaderCode(const Info& info, u32 sgpr_base) {
     return code;
 }
 
+// [FETCHMEMO 10.09] SHADPS4_FETCHMEMO=1: remember the last few parsed fetch shaders.
+// ParseFetchShader runs a full GCN decode (plus a 104-entry scratch array) and is called from
+// StageSpecialization's constructor - that is once per stage per DRAW, and the jungle scene
+// issues 1877 draws a frame from 143 pipelines, so the same handful of fetch shaders is decoded
+// thousands of times per frame. The key is (code pointer, first four code dwords): the game
+// generates this code on the CPU at run time, so a pointer alone could alias a rewritten buffer;
+// the four dwords make an alias detectable at the cost of four compares. Off by default.
+namespace {
+struct FetchMemoEntry {
+    const u32* code{};
+    std::array<u32, 4> head{};
+    std::optional<FetchShaderData> data{};
+    bool valid{};
+};
+constexpr size_t kFetchMemoSize = 16;
+thread_local std::array<FetchMemoEntry, kFetchMemoSize> g_fetch_memo{};
+thread_local size_t g_fetch_memo_next = 0;
+std::atomic<u64> g_fetch_memo_hits{};
+std::atomic<u64> g_fetch_memo_misses{};
+bool FetchMemoEnabled() {
+    static const bool on = [] {
+        const char* e = std::getenv("SHADPS4_FETCHMEMO");
+        const bool v = e != nullptr && e[0] == '1';
+        if (v) {
+            LOG_CRITICAL(Render_Recompiler, "FETCHMEMO: on (last {} fetch shaders per thread)",
+                         kFetchMemoSize);
+        }
+        return v;
+    }();
+    return on;
+}
+} // namespace
+
+u64 FetchMemoHits() {
+    return g_fetch_memo_hits.load(std::memory_order_relaxed);
+}
+u64 FetchMemoMisses() {
+    return g_fetch_memo_misses.load(std::memory_order_relaxed);
+}
+
 std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
     if (!info.has_fetch_shader) {
         return std::nullopt;
     }
 
     const auto* code = GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
+    const bool memo = FetchMemoEnabled();
+    std::array<u32, 4> head{};
+    if (memo) {
+        std::memcpy(head.data(), code, sizeof(head));
+        for (const auto& e : g_fetch_memo) {
+            if (e.valid && e.code == code && e.head == head) {
+                g_fetch_memo_hits.fetch_add(1, std::memory_order_relaxed);
+                return e.data;
+            }
+        }
+        g_fetch_memo_misses.fetch_add(1, std::memory_order_relaxed);
+    }
     FetchShaderData data{};
     GcnCodeSlice code_slice(code, code + std::numeric_limits<u32>::max());
     GcnDecodeContext decoder;
@@ -108,6 +163,14 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
         }
     }
 
+    if (memo) {
+        auto& e = g_fetch_memo[g_fetch_memo_next];
+        g_fetch_memo_next = (g_fetch_memo_next + 1) % kFetchMemoSize;
+        e.code = code;
+        e.head = head;
+        e.data = data;
+        e.valid = true;
+    }
     return data;
 }
 

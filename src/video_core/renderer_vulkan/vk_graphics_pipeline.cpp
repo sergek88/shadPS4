@@ -229,7 +229,12 @@ GraphicsPipeline::GraphicsPipeline(
             .module = modules[stage],
             .pName = "main",
         });
-    } else if (runtime_infos[u32(Shader::LogicalStage::Fragment)].fs_info.clip_distance_emulation) {
+    } else if (runtime_infos[u32(Shader::LogicalStage::Fragment)].fs_info.clip_distance_emulation ||
+               !sdata.fragment.empty()) {
+        // [Stage3] At preload runtime_infos[Fragment] is zero, so the discard-FS for clip-
+        // distance emulation would be dropped and depth-only pipelines would come back without
+        // it (SKIPFS recidive on RTX 5080). sdata.fragment is now serialized, so gate the stage
+        // on !sdata.fragment.empty(): runtime emits it here, preload restores it from disk.
         if (!preloading) {
             const auto vs_runtime_info =
                 runtime_infos[static_cast<u32>(Shader::LogicalStage::Vertex)].vs_info;
@@ -237,11 +242,13 @@ GraphicsPipeline::GraphicsPipeline(
             sdata.fragment =
                 Shader::Backend::SPIRV::EmitDiscardFragmentShader(vs_runtime_info.outputs);
         }
-        shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
-            .stage = vk::ShaderStageFlagBits::eFragment,
-            .module = CompileSPV(sdata.fragment, instance.GetDevice()),
-            .pName = "main",
-        });
+        if (!sdata.fragment.empty()) {
+            shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
+                .stage = vk::ShaderStageFlagBits::eFragment,
+                .module = CompileSPV(sdata.fragment, instance.GetDevice()),
+                .pName = "main",
+            });
+        }
     }
 
     const auto depth_format =

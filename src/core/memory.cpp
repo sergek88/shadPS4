@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/debug.h"
@@ -123,7 +124,7 @@ u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
     clamped_size = std::min(clamped_size, size);
 
     if (size != clamped_size) {
-        LOG_WARNING(Kernel_Vmm, "Clamped requested buffer range addr={:#x}, size={:#x} to {:#x}",
+        LOG_DEBUG(Kernel_Vmm, "Clamped requested buffer range addr={:#x}, size={:#x} to {:#x}",
                     virtual_addr, size, clamped_size);
     }
     return clamped_size;
@@ -166,9 +167,24 @@ void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
 
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     const VAddr virtual_addr = std::bit_cast<VAddr>(address);
+    // [debug] Guest executable image and its static data live low in the address space;
+    // a GPU readback landing there means we are corrupting the game's own globals.
+    if (virtual_addr < 0x10000000ULL) {
+        LOG_CRITICAL(Core, "WRITELOW: addr={:#x} size={:#x}", virtual_addr, size);
+    }
     std::shared_lock lk{mutex};
-    ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
-               virtual_addr);
+    // A GPU raw-address store to an unmapped page is dropped on the GPU side (matching hardware for
+    // stray job-system pointers); the write log still carries it, so the replay must drop it too
+    // instead of asserting the whole process away. Counted, first ones named.
+    if (!IsValidMapping(virtual_addr, size)) {
+        static std::atomic<u64> dropped{0};
+        const u64 n = dropped.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 8 || (n % 4096) == 0) {
+            LOG_WARNING(Core, "TryWriteBacking: dropped write to unmapped {:#x} size={:#x} ({} total)",
+                        virtual_addr, size, n);
+        }
+        return false;
+    }
 
     std::vector<VirtualMemoryArea> vmas_to_write;
     auto current_vma = FindVMA(virtual_addr);
@@ -184,8 +200,19 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
         return false;
     }
 
+    // [SPLITWRITE 10.09] A write that crosses a physical-area (or VMA) boundary used to copy the
+    // FIRST chunk again into every following chunk: `data` was never advanced and `start_in_vma`
+    // was never re-derived, while the destination did move on. Guest memory silently received
+    // duplicated bytes - and this path is the replay of GPU raw-address stores (fault_manager),
+    // i.e. exactly the data the game reads back. Advance the source with the destination, keep
+    // the running offset, and count the split writes so an A/B can see them happen.
+    const u8* src = static_cast<const u8*>(data);
+    u64 written = 0;
     for (auto& vma : vmas_to_write) {
-        auto start_in_vma = std::max<VAddr>(virtual_addr, vma.base) - vma.base;
+        if (!size) {
+            break;
+        }
+        auto start_in_vma = std::max<VAddr>(virtual_addr + written, vma.base) - vma.base;
         auto phys_handle = std::prev(vma.phys_areas.upper_bound(start_in_vma));
         for (; phys_handle != vma.phys_areas.end(); phys_handle++) {
             if (!size) {
@@ -193,10 +220,26 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
             }
             const u64 start_in_dma =
                 std::max<u64>(start_in_vma, phys_handle->first) - phys_handle->first;
+            if (start_in_dma >= phys_handle->second.size) {
+                continue;
+            }
             u8* backing = impl.BackingBase() + phys_handle->second.base + start_in_dma;
-            u64 copy_size = std::min<u64>(size, phys_handle->second.size - start_in_dma);
-            memcpy(backing, data, copy_size);
+            const u64 copy_size = std::min<u64>(size, phys_handle->second.size - start_in_dma);
+            memcpy(backing, src, copy_size);
+            src += copy_size;
+            written += copy_size;
             size -= copy_size;
+            start_in_vma += copy_size;
+            if (copy_size != 0 && size != 0) {
+                static std::atomic<u64> splits{0};
+                const u64 n = splits.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (n <= 8 || (n % 4096) == 0) {
+                    LOG_WARNING(Core,
+                                "SPLITWRITE: {:#x} crossed a backing boundary after {:#x} bytes "
+                                "({} total)",
+                                virtual_addr, written, n);
+                }
+            }
         }
     }
 

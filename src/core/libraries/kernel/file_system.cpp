@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include "common/postmortem.h"
 #include <map>
 #include <ranges>
 #include <magic_enum/magic_enum.hpp>
@@ -76,6 +78,15 @@ static std::map<std::string, FactoryDevice> available_device = {
 };
 
 namespace Libraries::Kernel {
+
+// [debug] трассировка чтений: SHADPS4_TRACEFILE=<подстрока пути>
+static void TraceRead(const char* who, Core::FileSys::File* file, s64 offset, u64 len) {
+    static const char* trc = std::getenv("SHADPS4_TRACEFILE");
+    if (trc && file->m_guest_name.find(trc) != std::string::npos) {
+        LOG_WARNING(Kernel_Fs, "TRACEREAD {}: {} off={:#x} len={:#x}", who,
+                    file->m_guest_name, offset, len);
+    }
+}
 
 s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
     LOG_INFO(Kernel_Fs, "path = {} flags = {:#x} mode = {:#o}", raw_path, flags, mode);
@@ -309,6 +320,7 @@ s64 PS4_SYSV_ABI write(s32 fd, const void* buf, u64 nbytes) {
         return -1;
     }
 
+    Postmortem::GuestWaitScope wait_scope{"file_write", static_cast<u64>(fd), nbytes};
     std::scoped_lock lk{file->m_mutex};
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->write(buf, nbytes);
@@ -366,6 +378,7 @@ s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
         *__Error() = POSIX_EBADF;
         return -1;
     }
+    { u64 total = 0; for (s32 i2 = 0; i2 < iovcnt; ++i2) total += iov[i2].iov_len; TraceRead("read", file, -1, total); }
 
     std::scoped_lock lk{file->m_mutex};
     if (file->type == Core::FileSys::FileType::Device) {
@@ -529,6 +542,7 @@ s64 PS4_SYSV_ABI read(s32 fd, void* buf, u64 nbytes) {
         return -1;
     }
 
+    Postmortem::GuestWaitScope wait_scope{"file_read", static_cast<u64>(fd), nbytes};
     std::scoped_lock lk{file->m_mutex};
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->read(buf, nbytes);
@@ -979,7 +993,10 @@ s32 PS4_SYSV_ABI sceKernelRename(const char* from, const char* to) {
     return result;
 }
 
+
 s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 offset) {
+    Postmortem::GuestWaitScope wait_scope{"file_preadv", static_cast<u64>(fd),
+                                          static_cast<u64>(offset)};
     if (offset < 0) {
         *__Error() = POSIX_EINVAL;
         return -1;
@@ -990,6 +1007,11 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
     if (file == nullptr) {
         *__Error() = POSIX_EBADF;
         return -1;
+    }
+    {
+        u64 total = 0;
+        for (s32 i = 0; i < iovcnt; ++i) total += iov[i].iov_len;
+        TraceRead("pread", file, offset, total);
     }
 
     std::scoped_lock lk{file->m_mutex};
@@ -1049,6 +1071,7 @@ s64 PS4_SYSV_ABI sceKernelPread(s32 fd, void* buf, u64 nbytes, s64 offset) {
 }
 
 s32 PS4_SYSV_ABI posix_fsync(s32 fd) {
+    Postmortem::GuestWaitScope wait_scope{"file_fsync", static_cast<u64>(fd)};
     auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
     auto* file = h->GetFile(fd);
     if (file == nullptr) {

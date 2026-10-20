@@ -218,13 +218,17 @@ private:
     IntervalMap m_ranges_map;
 };
 
-template <typename T>
+// Combine selects what an Add over an existing range does with the stored value:
+// inplace_identity keeps the OLD value, inplace_max keeps the larger one. A map of
+// "range -> tick of the last GPU write" must use inplace_max - re-marking a range
+// with a newer tick has to advance it, or a reader would wait for the FIRST write
+// and copy a torn result.
+template <typename T, template <class> class Combine = boost::icl::inplace_identity>
 class SplitRangeMap {
 public:
     using IntervalMap = boost::icl::split_interval_map<
-        VAddr, T, boost::icl::total_absorber, std::less, boost::icl::inplace_identity,
-        boost::icl::inter_section, ICL_INTERVAL_INSTANCE(ICL_INTERVAL_DEFAULT, VAddr, std::less),
-        RangeSetsAllocator>;
+        VAddr, T, boost::icl::total_absorber, std::less, Combine, boost::icl::inter_section,
+        ICL_INTERVAL_INSTANCE(ICL_INTERVAL_DEFAULT, VAddr, std::less), RangeSetsAllocator>;
     using IntervalType = typename IntervalMap::interval_type;
 
 public:

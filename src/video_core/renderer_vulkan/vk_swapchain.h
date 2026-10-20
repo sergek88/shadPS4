@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <vector>
 #include "common/types.h"
@@ -19,6 +21,16 @@ class Scheduler;
 
 class Swapchain {
 public:
+    // [debug] счётчики для дампа клина презент-цепочки
+    std::atomic<std::uint64_t> dbg_acquires{0};
+    std::atomic<std::uint64_t> dbg_presents{0};
+
+    // Фенс acquire: ограниченное CPU-ожидание доказывает, что имидж
+    // реально свободен, ДО постановки ожиданий в очередь (иначе спящий
+    // композитор превращает бинарный семафор в вечный клин очереди).
+    vk::Fence acquire_fence{};
+    std::vector<vk::Fence> retired_acquire_fences;
+
     explicit Swapchain(const Instance& instance, const Frontend::WindowSDL& window);
     ~Swapchain();
 
@@ -72,6 +84,10 @@ public:
 
     vk::Extent2D GetExtent() const {
         return extent;
+    }
+
+    [[nodiscard]] u32 GetImageIndex() const {
+        return image_index;
     }
 
     [[nodiscard]] vk::Semaphore GetImageAcquiredSemaphore() const {

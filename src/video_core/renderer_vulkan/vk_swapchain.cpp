@@ -29,6 +29,13 @@ Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& windo
 
 Swapchain::~Swapchain() {
     Destroy();
+    const auto device = instance.GetDevice();
+    if (acquire_fence) {
+        device.destroyFence(acquire_fence);
+    }
+    for (const auto f : retired_acquire_fences) {
+        device.destroyFence(f);
+    }
     instance.GetInstance().destroySurfaceKHR(surface);
 }
 
@@ -104,13 +111,55 @@ void Swapchain::SetHDR(bool hdr) {
 
 bool Swapchain::AcquireNextImage() {
     vk::Device device = instance.GetDevice();
+
+    if (!acquire_fence) {
+        acquire_fence =
+            device.createFence(vk::FenceCreateInfo{}).value;
+    }
+    // Retire graveyard fences that have signalled since.
+    std::erase_if(retired_acquire_fences, [&](vk::Fence f) {
+        if (device.getFenceStatus(f) == vk::Result::eSuccess) {
+            device.destroyFence(f);
+            return true;
+        }
+        return false;
+    });
+
     vk::Result result =
         device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
-                                   image_acquired[frame_index], VK_NULL_HANDLE, &image_index);
+                                   image_acquired[frame_index], acquire_fence, &image_index);
+
+    if (result == vk::Result::eSuccess || result == vk::Result::eSuboptimalKHR) {
+        // The binary acquire semaphore only helps if it is guaranteed to
+        // signal without depending on OUR later presents. When the
+        // presentation engine is dozing (occluded window, display state
+        // change) the returned image may stay busy indefinitely; queueing a
+        // wait on it would poison the whole graphics queue - that exact
+        // deadlock wedged chapter loads. A bounded CPU wait on the acquire
+        // fence proves the image is genuinely free before anyone may queue
+        // work against it; on timeout the frame is skipped instead.
+        const auto fence_wait = device.waitForFences(acquire_fence, true, 500'000'000ULL);
+        if (fence_wait == vk::Result::eTimeout) {
+            LOG_WARNING(Render_Vulkan,
+                        "Acquire of image {} not ready in 500 ms, skipping present", image_index);
+            retired_acquire_fences.push_back(acquire_fence);
+            acquire_fence = device.createFence(vk::FenceCreateInfo{}).value;
+            needs_recreation = true;
+            return false;
+        }
+        if (fence_wait == vk::Result::eSuccess) {
+            const auto reset_result = device.resetFences(acquire_fence);
+            ASSERT_MSG(reset_result == vk::Result::eSuccess, "Failed to reset acquire fence");
+        }
+    }
 
     switch (result) {
-    case vk::Result::eSuccess:
+    case vk::Result::eSuccess: {
+        const u64 n = dbg_acquires.fetch_add(1, std::memory_order_relaxed) + 1;
+        LOG_INFO(Render_Vulkan, "ACQ#{}: slot={} image={} sem={:#x}", n, frame_index, image_index,
+                 reinterpret_cast<u64>(static_cast<VkSemaphore>(image_acquired[frame_index])));
         break;
+    }
     case vk::Result::eSuboptimalKHR:
     case vk::Result::eErrorSurfaceLostKHR:
     case vk::Result::eErrorOutOfDateKHR:
@@ -137,7 +186,9 @@ bool Swapchain::Present() {
         .pImageIndices = &image_index,
     };
 
+    LOG_INFO(Render_Vulkan, "PKHR pre: image={}", image_index);
     auto result = instance.GetPresentQueue().presentKHR(present_info);
+    LOG_INFO(Render_Vulkan, "PKHR post: image={} result={}", image_index, vk::to_string(result));
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         needs_recreation = true;
     } else {
@@ -146,6 +197,7 @@ bool Swapchain::Present() {
     }
 
     frame_index = (frame_index + 1) % image_count;
+    dbg_presents.fetch_add(1, std::memory_order_relaxed);
 
     return !needs_recreation;
 }

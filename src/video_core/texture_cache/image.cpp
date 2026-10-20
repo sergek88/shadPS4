@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <ranges>
 #include "common/assert.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -202,9 +203,43 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
 
 Image::~Image() = default;
 
-ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_samples) {
+ImageView& Image::FindView(const ImageViewInfo& view_info_, bool ensure_guest_samples) {
     if (ensure_guest_samples && backing->num_samples > 1 != info.num_samples > 1) {
         SetBackingSamples(info.num_samples);
+    }
+    // [VIEWOOB] Invariant: every VkImageView's subresource range lies inside the image's
+    // resources. The guest T#/CB can describe more levels/layers than the image has (per-level
+    // images under MipOf=-1, an image re-created smaller); an out-of-range view is undefined
+    // behaviour and on NVIDIA reads past the allocation into a neighbour that may already be
+    // freed - the DEVFAULT ReadInvalid/WriteInvalid under the bloom blur (fs 0xb1032a3f). This is
+    // the single point every view goes through (FindTexture, FindRenderTarget, FindDepthTarget,
+    // presenter), so the clamp lives here; the counter names the offending image.
+    ImageViewInfo view_info = view_info_;
+    {
+        auto& r = view_info.range;
+        const auto& res = info.resources;
+        if (r.base.level + r.extent.levels > res.levels ||
+            r.base.layer + r.extent.layers > res.layers) {
+            static std::atomic<u32> s_n{0};
+            const u32 k = s_n.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (k <= 64 || k % 1024 == 0) {
+                LOG_CRITICAL(Render_Vulkan,
+                             "VIEWOOB#{}: addr={:#x} {}x{} lvls={} lyrs={} | view lvl {}+{} lyr "
+                             "{}+{} storage={} rt={}",
+                             k, info.guest_address, info.size.width, info.size.height,
+                             res.levels, res.layers, r.base.level, r.extent.levels,
+                             r.base.layer, r.extent.layers, u32(view_info.is_storage),
+                             u32(!ensure_guest_samples));
+            }
+            if (r.base.level >= res.levels) {
+                r.base.level = res.levels - 1;
+            }
+            r.extent.levels = std::min(r.extent.levels, res.levels - r.base.level);
+            if (r.base.layer >= res.layers) {
+                r.base.layer = res.layers - 1;
+            }
+            r.extent.layers = std::min(r.extent.layers, res.layers - r.base.layer);
+        }
     }
     const auto& view_infos = backing->image_view_infos;
     const auto it = std::ranges::find(view_infos, view_info);
@@ -769,6 +804,9 @@ void Image::Resolve(Image& src_image, const VideoCore::SubresourceRange& mrt0_ra
     }
 
     flags |= VideoCore::ImageFlagBits::GpuModified;
+    // [D1 RINGMIG_DL] Stamp modified_tick here too (5th GpuModified setter): a missed stamp
+    // would leave a resolve-written image falsely "clean" for the fast migration path (v1 loss).
+    modified_tick = scheduler->CurrentTick();
     flags &= ~VideoCore::ImageFlagBits::Dirty;
 }
 

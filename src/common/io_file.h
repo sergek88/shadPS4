@@ -75,14 +75,14 @@ public:
 
     explicit IOFile(const std::string& path, FileAccessMode mode,
                     FileType type = FileType::BinaryFile,
-                    FileShareFlag flag = FileShareFlag::ShareReadOnly);
+                    FileShareFlag flag = FileShareFlag::ShareReadWrite);
 
     explicit IOFile(std::string_view path, FileAccessMode mode,
                     FileType type = FileType::BinaryFile,
-                    FileShareFlag flag = FileShareFlag::ShareReadOnly);
+                    FileShareFlag flag = FileShareFlag::ShareReadWrite);
     explicit IOFile(const std::filesystem::path& path, FileAccessMode mode,
                     FileType type = FileType::BinaryFile,
-                    FileShareFlag flag = FileShareFlag::ShareReadOnly);
+                    FileShareFlag flag = FileShareFlag::ShareReadWrite);
 
     ~IOFile();
 
@@ -117,7 +117,7 @@ public:
 
     int Open(const std::filesystem::path& path, FileAccessMode mode,
              FileType type = FileType::BinaryFile,
-             FileShareFlag flag = FileShareFlag::ShareReadOnly);
+             FileShareFlag flag = FileShareFlag::ShareReadWrite);
     void Close();
 
     void Unlink();

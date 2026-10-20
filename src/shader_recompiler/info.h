@@ -3,7 +3,10 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <span>
+#include <utility>
+#include <unordered_set>
 #include <vector>
 #include <boost/container/static_vector.hpp>
 #include "common/assert.h"
@@ -22,6 +25,27 @@
 namespace Serialization {
 struct Archive;
 }
+
+namespace Shader {
+/// [bisect] SHADPS4_NODMA=lo-hi keeps shaders whose program hash falls in that range off the
+/// raw-address path. Every pass must get the same answer: muting a shader only at the end
+/// leaves it rewritten for direct addressing but compiled without the resolver, and the guest
+/// dies at boot. Turning direct memory access off globally removes the device faults, so
+/// halving the set of shaders that keep it finds the guilty one.
+inline bool IsDmaMutedByBisect(u64 pgm_hash) {
+    static const std::pair<u64, u64> range = [] {
+        const char* e = std::getenv("SHADPS4_NODMA");
+        if (e == nullptr) {
+            return std::pair<u64, u64>{1, 0};
+        }
+        char* end = nullptr;
+        const u64 lo = std::strtoull(e, &end, 16);
+        const u64 hi = (end != nullptr && *end == '-') ? std::strtoull(end + 1, nullptr, 16) : lo;
+        return std::pair<u64, u64>{lo, hi};
+    }();
+    return pgm_hash >= range.first && pgm_hash <= range.second;
+}
+} // namespace Shader
 
 namespace Shader {
 
@@ -109,7 +133,16 @@ struct Info : InfoPersistent {
         None = 0,
         Immediate = 1 << 0,
         Dynamic = 1 << 1,
+        Live = 1 << 2,
     };
+
+    /// ReadConst flags value marking a rewritten unbounded-V# access: the load
+    /// must stay volatile so polling loops observe concurrent memory writes.
+    static constexpr u32 LiveReadConstFlag = 0xFFFFFFFFu;
+    /// [POLLJ] The same live load, issued from a census poll loop while SHADPS4_PAGETRACE_POLLJ
+    /// is on: the backend routes it through read_const_live_poll, which also stamps the shader
+    /// hash into the presence window slot of the page it read. Never produced with the env off.
+    static constexpr u32 PollReadConstFlag = 0xFFFFFFFEu;
 
     struct Interpolation {
         Qualifier primary;
@@ -124,6 +157,18 @@ struct Info : InfoPersistent {
     AttributeFlags stores{};
 
     ReadConstType readconst_types{};
+    bool uses_live_write{};
+    bool uses_live_dma{};
+    /// [POLLJ] at least one PollReadConstFlag load: define read_const_live_poll (env on only)
+    bool uses_poll_read{};
+    // Transient (resource tracking only): blocks living inside loops. Live
+    // reads there poll and must stay volatile; live reads outside loops keep
+    // cacheable loads — volatile everywhere collapses PCIe throughput.
+    std::unordered_set<const void*> loop_blocks;
+    // [POLLJ] Transient: blocks of store-free loops with 1..8 buffer loads (the census poll
+    // shape, independent of the LIVELOOP=2 load cap). Filled only while the presence trace is
+    // on; scalar live reads there carry PollReadConstFlag instead of LiveReadConstFlag.
+    std::unordered_set<const void*> poll_blocks;
     CopyShaderData gs_copy_data;
     u32 uses_patches{};
 
@@ -137,6 +182,11 @@ struct Info : InfoPersistent {
     bool uses_lane_id{};
     bool uses_group_quad{};
     bool uses_group_ballot{};
+    // [CSSPLIT] s_barrier / workgroup memory barrier present: a split changes who syncs with whom
+    bool uses_barrier{};
+    // [CSSPLIT] written by the SPIR-V backend for the compile that just ran: log2 of the split it
+    // applied to LocalSize.x (0 = none). Read back by PipelineCache::GetProgram, never persisted.
+    u8 cssplit_eff_log2{};
     IR::Type shared_types{};
     bool uses_fp16{};
     bool uses_fp64{};

@@ -7,12 +7,20 @@
 #include "shader_recompiler/resource.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/texture_cache/host_compatibility.h"
+#include <atomic>
+#include <string>
 #include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/tile.h"
 
 #include <magic_enum/magic_enum.hpp>
 
 namespace VideoCore {
+
+// [postmortem] Uncapped ring-signature counter, lives in texture_cache.cpp
+// (namespace texstat) and is printed by the postmortem TEXSTAT hook.
+namespace texstat {
+extern std::atomic<u64> ring_mipfail;
+}
 
 using namespace Vulkan;
 using Libraries::VideoOut::TilingMode;
@@ -236,15 +244,49 @@ s32 ImageInfo::MipOf(const ImageInfo& info) const {
         const VAddr mip_base = info.guest_address + mip_ofs;
         const VAddr mip_end = mip_base + mip_size;
         const u32 slice_size = mip_size / info.resources.layers;
-        if (guest_address >= mip_base && guest_address < mip_end &&
-            (guest_address - mip_base) % slice_size == 0 &&
-            (pitch >> this_dim) == (mip_pitch >> info_dim)) {
+        const bool inside_mip = guest_address >= mip_base && guest_address < mip_end &&
+                                (guest_address - mip_base) % slice_size == 0;
+        if (!inside_mip) {
+            continue;
+        }
+        // When a game renders into a mip level it often leaves the *base* surface pitch in
+        // the colour-buffer register instead of the level's own pitch. Demanding the pitches
+        // match then hides the level, every level becomes a separate image, and a chain that
+        // renders level N+1 from level N reads levels nobody ever wrote. Landing exactly on
+        // the level's base is identification enough - the size check below still rejects
+        // anything whose dimensions do not fit the level.
+        if ((pitch >> this_dim) == (mip_pitch >> info_dim) || guest_address == mip_base) {
             mip = m;
             break;
         }
     }
 
     if (mip < 0) {
+        // [postmortem] Count the 960x540 video-ring signature failing MipOf without any
+        // cap: the capped MIPFAIL log goes quiet long before the fatal window, so only
+        // this counter says how often the ring actually slides.
+        if (size.width == 960 && size.height == 540 && guest_size == 0x240000 &&
+            resources.levels == 1) {
+            texstat::ring_mipfail.fetch_add(1, std::memory_order_relaxed);
+        }
+        // Report why: the exposure pyramid depends on this recognition, and a silent -1
+        // turns every mip level into a separate image.
+        static u32 dbg = 0;
+        if (dbg < 12) {
+            ++dbg;
+            std::string layout;
+            for (u32 m = 0; m < info.resources.levels && m < 8; ++m) {
+                const auto& [msz, mpitch, mheight, mofs] = info.mips_layout[m];
+                fmt::format_to(std::back_inserter(layout), "[{}]ofs={:#x} sz={:#x} pitch={} ", m,
+                               mofs, msz, mpitch);
+            }
+            LOG_CRITICAL(Render_Vulkan,
+                         "MIPFAIL: this addr={:#x} {}x{} pitch={} | base addr={:#x} {}x{} "
+                         "levels={} layers={} | {}",
+                         guest_address, size.width, size.height, pitch, info.guest_address,
+                         info.size.width, info.size.height, info.resources.levels,
+                         info.resources.layers, layout);
+        }
         return -1;
     }
 
@@ -292,7 +334,15 @@ s32 ImageInfo::SliceOf(const ImageInfo& info, s32 mip) const {
     const auto this_w = std::max(size.width >> this_dim, 1u);
     const auto this_h = std::max(size.height >> this_dim, 1u);
     const auto this_p = std::max(pitch >> this_dim, 1u);
-    if ((this_w != mip_w) || (this_h != mip_h) || (this_p != mip_p)) {
+    // Same relaxation as in MipOf: a game rendering into a mip level usually leaves the *base*
+    // surface pitch in the colour-buffer register, so the level's own pitch never matches.
+    // Without this, MipOf identifies the level and SliceOf immediately throws it away, every
+    // level becomes a standalone image, and a chain that renders level N+1 from level N reads
+    // levels nobody ever wrote. Landing exactly on the level's base is identification enough -
+    // the width and height checks above already reject anything that is not this level.
+    const VAddr level_base = info.guest_address + info.mips_layout[mip].offset;
+    const bool at_level_base = guest_address == level_base;
+    if ((this_w != mip_w) || (this_h != mip_h) || (this_p != mip_p && !at_level_base)) {
         return -1;
     }
 
@@ -303,7 +353,7 @@ s32 ImageInfo::SliceOf(const ImageInfo& info, s32 mip) const {
     }
 
     // Ensure that address is aligned too.
-    const auto addr_diff = guest_address - (info.guest_address + info.mips_layout[mip].offset);
+    const auto addr_diff = guest_address - level_base;
     if ((addr_diff % guest_size) != 0) {
         return -1;
     }

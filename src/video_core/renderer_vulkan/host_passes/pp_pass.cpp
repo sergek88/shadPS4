@@ -236,6 +236,8 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
         },
     };
 
+    Vulkan::InvalidateBoundPipeline();
+
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
 
     const std::array viewports = {

@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include "common/logging/log.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/ir/reinterpret.h"
 #include "video_core/amdgpu/resource.h"
+// [SKINDIRECT-STORES] census of the converted output stores that reach raw OpStores here (the
+// resource tracking pass includes the same header for the read-side registry).
+#include "video_core/buffer_cache/buffer_cache.h"
 
 namespace Shader::Optimization {
 
@@ -106,9 +111,28 @@ static IR::Value LoadBufferFormat(IR::IREmitter& ir, const IR::Value handle, con
     return swizzled;
 }
 
-static void StoreBufferFormat(IR::IREmitter& ir, const IR::Value handle, const IR::U32 address,
+// Returns true when raw stores were emitted, false when the FMT0 guard dropped the store.
+static bool StoreBufferFormat(IR::IREmitter& ir, const IR::Value handle, const IR::U32 address,
                               const IR::Value& value, const IR::BufferInstInfo info,
-                              const FormatInfo& format_info) {
+                              const FormatInfo& format_info, u64 pgm_hash) {
+    // [FMT0] A specialization with an invalid/zero-component data format (the skinning worker
+    // 0x8f067540 hit one mid-fight on 06.09) reached CompositeConstruct with 0 elements ->
+    // UNREACHABLE killed the process. Hardware writes nothing for FormatInvalid: do the same.
+    if (format_info.num_components == 0 ||
+        format_info.data_format == AmdGpu::DataFormat::FormatInvalid) {
+        static std::atomic<u32> s_n{0};
+        const u32 k = s_n.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (k <= 8 || k % 1024 == 0) {
+            // [SKINDIRECT-STORES] the hash names the shader: for a listed one this line must only
+            // ever appear next to a SPECMISS (empty job slot), never grow in the fight. Appended,
+            // so the existing "FMT0 #N: typed store" greps keep matching.
+            LOG_CRITICAL(Render_Recompiler,
+                         "FMT0 #{}: typed store with data_format={} components={} dropped (shader {:#x})",
+                         k, static_cast<u32>(format_info.data_format), format_info.num_components,
+                         pgm_hash);
+        }
+        return false;
+    }
     // Extract actual number of components and apply additional modifications.
     const auto swizzled = ApplySwizzle(ir, value, format_info.swizzle.Inverse());
     boost::container::static_vector<IR::Value, 4> components;
@@ -187,6 +211,7 @@ static void StoreBufferFormat(IR::IREmitter& ir, const IR::Value handle, const I
     default:
         UNREACHABLE_MSG("Unsupported buffer data format: {}", format_info.data_format);
     }
+    return true;
 }
 
 static void LowerBufferFormatInst(IR::Block& block, IR::Inst& inst, Info& info) {
@@ -217,8 +242,16 @@ static void LowerBufferFormatInst(IR::Block& block, IR::Inst& inst, Info& info) 
             LoadBufferFormat(ir, inst.Arg(0), IR::U32{inst.Arg(1)}, flags, format_info);
         inst.ReplaceUsesWithAndRemove(interpreted);
     } else if (IsBufferFormatStore(inst)) {
-        StoreBufferFormat(ir, inst.Arg(0), IR::U32{inst.Arg(1)}, inst.Arg(2), flags, format_info);
+        const bool emitted = StoreBufferFormat(ir, inst.Arg(0), IR::U32{inst.Arg(1)}, inst.Arg(2),
+                                               flags, format_info, info.pgm_hash);
         inst.Invalidate();
+        // [SKINDIRECT-STORES] census only: a converted output store of a listed shader reached
+        // raw OpStores (lowered) or was dropped by the FMT0 guard (fmt0). The registry lookup
+        // inside ignores sharps the resource tracking pass did not convert.
+        if (desc.is_written && VideoCore::BufferCache::SkinDirectWanted(info.pgm_hash)) {
+            VideoCore::BufferCache::SkinDirectNoteStoreLowered(info.pgm_hash, desc.sharp_idx,
+                                                                emitted);
+        }
     }
 }
 

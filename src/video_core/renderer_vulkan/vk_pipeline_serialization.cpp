@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <type_traits>
+#include "common/scope_exit.h"
+#include "common/postmortem.h"
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -14,7 +21,7 @@ namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 3u;
 static constexpr u32 ShaderMetaVersion = 3u;
-static constexpr u32 PipelineKeyVersion = 3u;
+static constexpr u32 PipelineKeyVersion = 4u; // [Stage3] bumped: fragment now serialized
 } // namespace Serialization
 
 namespace Vulkan {
@@ -160,7 +167,13 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     }
 
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
-    ASSERT(is_new);
+    // [Stage3] skip-if-exists instead of ASSERT(is_new): a duplicate key in the store must
+    // not abort preload; the already-built pipeline is kept.
+    if (!is_new) {
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        return true;
+    }
 
     it.value() =
         std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile, *pipeline_cache,
@@ -194,6 +207,9 @@ void GraphicsPipeline::SerializationSupport::Serialize(Serialization::Archive& a
     sdata.Write(multisampling);
     sdata.Write(tcs);
     sdata.Write(tes);
+    // [Stage3] fragment (clip-distance discard-FS) must persist: without it preloaded
+    // depth-only pipelines lose clip-distance emulation. PipelineKeyVersion bumped for it.
+    sdata.Write(fragment);
 }
 
 bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive& ar) {
@@ -205,6 +221,7 @@ bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive&
     sdata.Read(multisampling);
     sdata.Read(tcs);
     sdata.Read(tes);
+    sdata.Read(fragment); // [Stage3] see Serialize
     return true;
 }
 
@@ -235,7 +252,14 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     }
 
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
-    ASSERT(is_new);
+    // [Stage3] skip-if-exists instead of ASSERT(is_new): a duplicate key in the store must
+    // not abort preload; the already-built pipeline is kept.
+    if (!is_new) {
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        fetch_shader.reset();
+        return true;
+    }
 
     it.value() = std::make_unique<GraphicsPipeline>(
         instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
@@ -276,7 +300,9 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
         it_pgm.value() = std::move(program);
     } else {
         const auto& it = std::ranges::find(it_pgm.value()->modules, spec, &Program::Module::spec);
-        if (it != it_pgm.value()->modules.end()) {
+        // [Stage2] Ignore a spec match that landed on an InsertPermut() hole (default spec,
+        // VK_NULL_HANDLE module): using it would bind a null shader module.
+        if (it != it_pgm.value()->modules.end() && it->module != VK_NULL_HANDLE) {
             // A matching permutation is valid only at its original index. A different index means
             // the store holds entries from more than one cache generation, so this pipeline is
             // left to compile at runtime.
@@ -302,7 +328,27 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
 }
 
 void PipelineCache::WarmUp() {
-    if (!EmulatorSettings.IsPipelineCacheEnabled()) {
+    // [STARTUP] Preloading pipelines happens before the first frame too; measured so it can be
+    // compared against the import cost instead of both being lumped into "black screen".
+    Postmortem::StartupT0();
+    const auto startup_t0 = std::chrono::steady_clock::now();
+    SCOPE_EXIT {
+        Postmortem::g_startup_pcache_ms.store(
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - startup_t0)
+                                 .count()),
+            std::memory_order_relaxed);
+    };
+    // [Stage2] SHADPS4_PCACHE=1 turns on the already-present disk cache without touching the
+    // reference config.toml. Directory-mode only: the env override refuses the zip/archived
+    // path (its blob is only finalized in Close()/Sync(), which the tree never calls).
+    static const bool pcache_env = [] {
+        const char* e = std::getenv("SHADPS4_PCACHE");
+        return e && e[0] == '1';
+    }();
+    const bool enabled = EmulatorSettings.IsPipelineCacheEnabled() ||
+                         (pcache_env && !EmulatorSettings.IsPipelineCacheArchived());
+    if (!enabled) {
         return;
     }
 
@@ -311,19 +357,30 @@ void PipelineCache::WarmUp() {
     // Check if cache is compatible
     std::vector<u8> profile_data{};
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
+    // The profile is compared with memcmp semantics after a memcpy round-trip, so it must be
+    // serialized DETERMINISTICALLY: assign into a zeroed object (copy-assignment leaves padding
+    // alone, so the padding stays the zeros we just wrote) and blit that. Without this the trailing
+    // padding is whatever the stack held, and every future run mismatches its own cache.
+    const auto normalized_profile = [this] {
+        Shader::Profile out;
+        std::memset(&out, 0, sizeof(out));
+        out = profile;
+        return out;
+    };
     if (profile_data.empty()) {
         Storage::DataBase::Instance().FinishPreload();
 
-        profile_data.resize(sizeof(profile));
-        std::memcpy(profile_data.data(), &profile, sizeof(profile));
+        const Shader::Profile fresh = normalized_profile();
+        profile_data.resize(sizeof(fresh));
+        std::memcpy(profile_data.data(), &fresh, sizeof(fresh));
         Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
                                            std::move(profile_data));
+        LOG_CRITICAL(Render, "PCACHEDISK: preloaded=0 stale=0 (fresh profile written)");
         return;
     }
     if (profile_data.size() != sizeof(Shader::Profile)) {
-        LOG_WARNING(Render,
-                    "Pipeline cache profile has unexpected size ({} != {}). Ignoring the cache",
-                    profile_data.size(), sizeof(Shader::Profile));
+        LOG_CRITICAL(Render, "PCACHEDISK: disabled reason=profile-size ({} != {})",
+                     profile_data.size(), sizeof(Shader::Profile));
         Storage::DataBase::Instance().Close();
         return;
     }
@@ -331,10 +388,121 @@ void PipelineCache::WarmUp() {
     Shader::Profile cached_profile{};
     std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
     if (cached_profile != profile) {
-        LOG_WARNING(Render,
-                    "Pipeline cache isn't compatible with current system. Ignoring the cache");
-        Storage::DataBase::Instance().Close();
-        return;
+        // Name the differing fields (cached -> current): compilations burn 6.7ms per draw, so
+        // knowing WHY the disk cache refused itself is the difference between fixing the key
+        // and rebuilding the cache blindly.
+        // Compare the RAW BYTES of each field, not the typed values: the profile is restored
+        // with memcpy, so a bool can hold a byte like 0x02 that `!=` reports as different while
+        // fmt still prints it as "false" (that is exactly what "spinguard:false->false" was).
+        // Values are printed as hex of the raw bytes for the same reason.
+        std::string diff;
+        const auto* cached_bytes = reinterpret_cast<const u8*>(&cached_profile);
+        const auto* live_bytes = reinterpret_cast<const u8*>(&profile);
+        const auto raw_hex = [](const u8* p, size_t n) {
+            std::string s = "0x";
+            for (size_t i = n; i-- > 0;) {
+                s += fmt::format("{:02x}", p[i]); // little-endian -> natural reading order
+            }
+            return s;
+        };
+        // First 16 bytes, in memory order, for the padding case.
+        const auto raw_hex_span = [](const u8* p) {
+            std::string s;
+            for (size_t i = 0; i < 16 && i < sizeof(Shader::Profile); ++i) {
+                s += fmt::format("{:02x}", p[i]);
+            }
+            return s;
+        };
+        // A bool can only legally hold 0 or 1. Anything else in the CACHED copy means that byte
+        // was PADDING when the blob was written - i.e. the file predates a layout where a bool
+        // was appended (sizeof stays 72 either way, so the size check waves it through). That is
+        // a stale FORMAT, not a semantic difference, and it is why the cache has been refusing
+        // itself on every single run: the mismatch path never rewrote profile.bin.
+        bool stale_format = false;
+        bool semantic_diff = false;
+#define PROF_DIFF(f)                                                                               \
+    {                                                                                              \
+        const size_t off_ = offsetof(Shader::Profile, f);                                          \
+        const size_t len_ = sizeof(Shader::Profile::f);                                            \
+        if (std::memcmp(cached_bytes + off_, live_bytes + off_, len_) != 0) {                      \
+            const bool garbage_bool_ =                                                             \
+                std::is_same_v<decltype(Shader::Profile::f), bool> && cached_bytes[off_] > 1;      \
+            (garbage_bool_ ? stale_format : semantic_diff) = true;                                 \
+            diff += fmt::format(" {}:{}->{}{}", #f, raw_hex(cached_bytes + off_, len_),            \
+                                raw_hex(live_bytes + off_, len_), garbage_bool_ ? "(stale)" : ""); \
+        }                                                                                          \
+    }
+        PROF_DIFF(max_ubo_size)
+        PROF_DIFF(max_viewport_width)
+        PROF_DIFF(max_viewport_height)
+        PROF_DIFF(max_shared_memory_size)
+        PROF_DIFF(supported_spirv)
+        PROF_DIFF(subgroup_size)
+        PROF_DIFF(support_int8)
+        PROF_DIFF(support_int16)
+        PROF_DIFF(support_int64)
+        PROF_DIFF(support_float16)
+        PROF_DIFF(support_float64)
+        PROF_DIFF(supports_denorm_behavior_independence)
+        PROF_DIFF(supports_rounding_mode_independence)
+        PROF_DIFF(support_fp16_denorm_preserve)
+        PROF_DIFF(support_fp16_denorm_flush)
+        PROF_DIFF(support_fp16_round_to_zero)
+        PROF_DIFF(support_fp32_denorm_preserve)
+        PROF_DIFF(support_fp32_denorm_flush)
+        PROF_DIFF(support_fp32_round_to_zero)
+        PROF_DIFF(support_fp64_denorm_preserve)
+        PROF_DIFF(support_fp64_denorm_flush)
+        PROF_DIFF(support_fp64_round_to_zero)
+        PROF_DIFF(support_fp16_signed_zero_inf_nan_preserve)
+        PROF_DIFF(support_fp32_signed_zero_inf_nan_preserve)
+        PROF_DIFF(support_fp64_signed_zero_inf_nan_preserve)
+        PROF_DIFF(supports_image_load_store_lod)
+        PROF_DIFF(supports_native_cube_calc)
+        PROF_DIFF(supports_trinary_minmax)
+        PROF_DIFF(supports_buffer_fp32_atomic_min_max)
+        PROF_DIFF(supports_image_fp32_atomic_min_max)
+        PROF_DIFF(supports_buffer_int64_atomics)
+        PROF_DIFF(supports_shared_int64_atomics)
+        PROF_DIFF(supports_workgroup_explicit_memory_layout)
+        PROF_DIFF(supports_amd_shader_explicit_vertex_parameter)
+        PROF_DIFF(supports_fragment_shader_barycentric)
+        PROF_DIFF(has_broken_spirv_clamp)
+        PROF_DIFF(lower_left_origin_mode)
+        PROF_DIFF(needs_manual_interpolation)
+        PROF_DIFF(needs_lds_barriers)
+        PROF_DIFF(needs_buffer_offsets)
+        PROF_DIFF(needs_unorm_fixup)
+        PROF_DIFF(needs_clip_distance_emulation)
+        PROF_DIFF(supports_shader_stencil_export)
+        PROF_DIFF(spinguard)
+#undef PROF_DIFF
+        if (diff.empty()) {
+            // Every declared field matches byte for byte, yet operator== said no: the
+            // difference lives in padding the memcpy round-trip carried along. Show the head of
+            // both blobs so the offending offset is identifiable.
+            stale_format = true;
+            diff = " <no field differs - struct padding> cached=" + raw_hex_span(cached_bytes) +
+                   " live=" + raw_hex_span(live_bytes);
+        }
+        if (stale_format && !semantic_diff) {
+            // Nothing REAL differs. Rewrite the blob normalized and keep using the cache -
+            // otherwise this run, and every run after it, throws the pipelines away and pays
+            // the compile cost again (~6.7 ms per draw).
+            const Shader::Profile fresh = normalized_profile();
+            std::vector<u8> fresh_data(sizeof(fresh));
+            std::memcpy(fresh_data.data(), &fresh, sizeof(fresh));
+            Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
+                                               std::move(fresh_data));
+            LOG_CRITICAL(Render, "PCACHEDISK: stale-format profile normalized, cache kept.{}",
+                         diff);
+        } else {
+            // A real capability changed: the stored SPIR-V was built for another profile, so
+            // nothing here may be loaded. Left disabled on purpose.
+            LOG_CRITICAL(Render, "PCACHEDISK: disabled reason=profile-mismatch diff:{}", diff);
+            Storage::DataBase::Instance().Close();
+            return;
+        }
     }
 
     u32 num_pipelines{};
@@ -368,11 +536,8 @@ void PipelineCache::WarmUp() {
             }
         });
 
-    LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
-    if (num_total_pipelines > num_pipelines) {
-        LOG_WARNING(Render, "{} stale pipelines were found. Consider re-generating the cache",
-                    num_total_pipelines - num_pipelines);
-    }
+    LOG_CRITICAL(Render, "PCACHEDISK: preloaded={} stale={}", num_pipelines,
+                 num_total_pipelines - num_pipelines);
 
     Storage::DataBase::Instance().FinishPreload();
 }

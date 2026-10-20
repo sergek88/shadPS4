@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <chrono>
+#include "common/postmortem.h"
 #include "gnm_error.h"
 #include "gnmdriver.h"
 
@@ -80,13 +83,196 @@ static constexpr u32 tessellation_offchip_buffer_size = 0x800000u;
 static void ResetSubmissionLock(Platform::InterruptId irq) {
     std::unique_lock lock{m_submission};
     submission_lock = 0;
+    Postmortem::g_submission_lock.store(0, std::memory_order_relaxed);
+    Postmortem::g_sub_dec[1].fetch_add(1, std::memory_order_relaxed);
     cv_lock.notify_all();
 }
 
 static void WaitGpuIdle() {
+    Postmortem::GuestWaitScope wait_scope{"WaitGpuIdle"};
     HLE_TRACE;
+    // [GPUIDLE] Safety net for the class "waits forever". submission_lock is cleared by exactly
+    // one place - the GpuIdle interrupt handler - so a single lost reset parks the frame thread
+    // permanently. SHADPS4_GPUIDLE_MS=0 restores the plain unbounded wait.
+    // Default 0 = the original unbounded wait, so this build matches the 17:16 reference.
+    static const u64 timeout_ms = [] {
+        const char* e = std::getenv("SHADPS4_GPUIDLE_MS");
+        return e != nullptr ? std::strtoull(e, nullptr, 10) : 0ull;
+    }();
     std::unique_lock lock{m_submission};
-    cv_lock.wait(lock, [] { return submission_lock == 0; });
+    if (timeout_ms == 0) {
+        cv_lock.wait(lock, [] { return submission_lock == 0; });
+        return;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    while (submission_lock != 0) {
+        if (cv_lock.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                             [] { return submission_lock == 0; })) {
+            return;
+        }
+        // Timed out. Only force the flag when the GPU is OBJECTIVELY idle - then the flag can
+        // only be a lost reset, because nothing remains that could ever raise GpuIdle again.
+        // A busy GPU keeps waiting exactly as before; this is not a general timeout.
+        if (liverpool != nullptr && liverpool->IsGpuIdle()) {
+            const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - started)
+                                    .count();
+            LOG_CRITICAL(Lib_GnmDriver, "GPUIDLE: forced release after {}ms (lock was stuck)",
+                         waited);
+            submission_lock = 0;
+            Postmortem::g_submission_lock.store(0, std::memory_order_relaxed);
+            Postmortem::g_sub_dec[2].fetch_add(1, std::memory_order_relaxed);
+            cv_lock.notify_all();
+            return;
+        }
+    }
+}
+
+// [perf-experiment] SHADPS4_SUBDEPTH=N: вместо лок-степа «submitDone ждёт
+// полного осушения GPU» — конвейер, ограниченный N gfx-сабмитами.
+// -1 = выключено (поведение апстрима). Несовместимо с copy-GPU-buffers:
+// SubmitDone() сбрасывает offset копировального буфера, и при живом
+// конвейере следующий кадр перепишет команды, которые GPU ещё читает.
+static std::atomic<u64> flips_requested{};
+
+// [debug] SHADPS4_RIPSAMPLER=1: раз в 3с логируем RIP гостевых потоков —
+// повторяющийся адрес = спин-цикл, который держит кадр.
+#ifdef _WIN64
+#include <windows.h>
+#include <tlhelp32.h>
+#include <dbghelp.h>
+#include <psapi.h>
+#pragma comment(lib, "dbghelp.lib")
+static void RipSamplerThread() {
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+    using namespace std::chrono_literals;
+    const DWORD pid = GetCurrentProcessId();
+    const DWORD self = GetCurrentThreadId();
+    while (true) {
+        std::this_thread::sleep_for(3s);
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE) {
+            continue;
+        }
+        THREADENTRY32 te{};
+        te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te)) {
+            do {
+                if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) {
+                    continue;
+                }
+                HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
+                                          THREAD_QUERY_LIMITED_INFORMATION,
+                                      FALSE, te.th32ThreadID);
+                if (!h) {
+                    continue;
+                }
+                PWSTR desc = nullptr;
+                std::string name;
+                if (SUCCEEDED(GetThreadDescription(h, &desc)) && desc) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, desc, -1, nullptr, 0, nullptr,
+                                                  nullptr);
+                    if (len > 1) {
+                        name.resize(len - 1);
+                        WideCharToMultiByte(CP_UTF8, 0, desc, -1, name.data(), len, nullptr,
+                                            nullptr);
+                    }
+                    LocalFree(desc);
+                }
+                const bool guest = name.find("Frame Submission") != std::string::npos ||
+                                   name.find("NdJobWorker") != std::string::npos ||
+                                   name.find("GPU Interrupts") != std::string::npos;
+                if (guest) {
+                    if (SuspendThread(h) != (DWORD)-1) {
+                        CONTEXT ctx{};
+                        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+                        if (GetThreadContext(h, &ctx)) {
+                            char sym_buf[sizeof(SYMBOL_INFO) + 256]{};
+                            auto* sym = reinterpret_cast<SYMBOL_INFO*>(sym_buf);
+                            sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+                            sym->MaxNameLen = 255;
+                            const char* rip_name = "?";
+                            if (SymFromAddr(GetCurrentProcess(), ctx.Rip, nullptr, sym)) {
+                                rip_name = sym->Name;
+                            }
+                            // честный унвинд: StackWalk64 до первого кадра в нашем exe
+                            u64 hle_addr = 0;
+                            const char* hle_name = "?";
+                            static u64 exe_base = 0, exe_end = 0;
+                            if (!exe_base) {
+                                MODULEINFO mi{};
+                                if (GetModuleInformation(GetCurrentProcess(),
+                                                         GetModuleHandleA(nullptr), &mi,
+                                                         sizeof(mi))) {
+                                    exe_base = reinterpret_cast<u64>(mi.lpBaseOfDll);
+                                    exe_end = exe_base + mi.SizeOfImage;
+                                }
+                            }
+                            char sym_buf2[sizeof(SYMBOL_INFO) + 256]{};
+                            auto* sym2 = reinterpret_cast<SYMBOL_INFO*>(sym_buf2);
+                            sym2->SizeOfStruct = sizeof(SYMBOL_INFO);
+                            sym2->MaxNameLen = 255;
+                            STACKFRAME64 sf{};
+                            sf.AddrPC.Mode = AddrModeFlat;
+                            sf.AddrPC.Offset = ctx.Rip;
+                            sf.AddrFrame.Mode = AddrModeFlat;
+                            sf.AddrFrame.Offset = ctx.Rbp;
+                            sf.AddrStack.Mode = AddrModeFlat;
+                            sf.AddrStack.Offset = ctx.Rsp;
+                            CONTEXT wctx = ctx;
+                            for (int depth = 0; depth < 24; ++depth) {
+                                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(),
+                                                 h, &sf, &wctx, nullptr,
+                                                 SymFunctionTableAccess64, SymGetModuleBase64,
+                                                 nullptr)) {
+                                    break;
+                                }
+                                const u64 pc = sf.AddrPC.Offset;
+                                if (!pc) {
+                                    break;
+                                }
+                                if (pc >= exe_base && pc < exe_end) {
+                                    hle_addr = pc;
+                                    if (SymFromAddr(GetCurrentProcess(), pc, nullptr, sym2)) {
+                                        hle_name = sym2->Name;
+                                    }
+                                    break;
+                                }
+                            }
+                            LOG_WARNING(Lib_GnmDriver,
+                                        "RIPSAMPLE '{}' rip={:#x} [{}] hle={:#x} [{}]", name,
+                                        ctx.Rip, rip_name, hle_addr, hle_name);
+                        }
+                        ResumeThread(h);
+                    }
+                }
+                CloseHandle(h);
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+    }
+}
+static void StartRipSamplerOnce() {
+    static bool started = false;
+    if (!started && std::getenv("SHADPS4_RIPSAMPLER") != nullptr) {
+        started = true;
+        std::thread(RipSamplerThread).detach();
+    }
+}
+#else
+static void StartRipSamplerOnce() {}
+#endif
+
+static int SubmitDepthOverride() {
+    static const int depth = [] {
+        const char* env = std::getenv("SHADPS4_SUBDEPTH");
+        if (!env || EmulatorSettings.IsCopyGpuBuffers()) {
+            return -1;
+        }
+        return std::atoi(env);
+    }();
+    return depth;
 }
 
 // Write a special ending NOP packet with N DWs data block
@@ -151,6 +337,16 @@ s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
                 return;
 
             // Event data is expected to be an event type as per sceGnmGetEqEventType.
+            {
+                static const bool s_eqsig = std::getenv("SHADPS4_STUCKLOG") != nullptr;
+                if (s_eqsig) {
+                    static std::atomic<u32> s_sig_no{0};
+                    const u32 n = ++s_sig_no;
+                    if ((n % 50) == 0) {
+                        LOG_WARNING(Lib_GnmDriver, "EQSIG: gnm irq #{} (id={})", n, id);
+                    }
+                }
+            }
             equeue->TriggerEvent(static_cast<GnmEventType>(id),
                                  OrbisKernelEvent::Filter::GraphicsCore,
                                  reinterpret_cast<void*>(id));
@@ -297,7 +493,9 @@ void PS4_SYSV_ABI sceGnmDingDong(u32 gnm_vqid, u32 next_offs_dw) {
         return;
     }
 
-    WaitGpuIdle();
+    if (SubmitDepthOverride() < 0) {
+        WaitGpuIdle();
+    }
 
     if (DebugState.ShouldPauseInSubmit()) {
         DebugState.PauseGuestThreads();
@@ -2191,6 +2389,8 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffersForWorkload(
     if (patch_result != ORBIS_OK) {
         return patch_result;
     }
+    Postmortem::g_flips_requested.store(
+        flips_requested.fetch_add(1, std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 
     return sceGnmSubmitCommandBuffers(count, const_cast<const u32**>(dcb_gpu_addrs),
                                       dcb_sizes_in_bytes, const_cast<const u32**>(ccb_gpu_addrs),
@@ -2203,6 +2403,11 @@ int PS4_SYSV_ABI sceGnmSubmitCommandBuffersForWorkload(u32 workload, u32 count,
                                                        const u32* ccb_gpu_addrs[],
                                                        u32* ccb_sizes_in_bytes) {
     HLE_TRACE;
+    // [GUESTSTALL-TIME] Every submit path funnels here (the AndFlip variants tail-call it), so
+    // one stamp covers them all; the flip variant adds its own below.
+    Postmortem::g_last_submit_ms.store(Postmortem::NowMs(), std::memory_order_relaxed);
+    Postmortem::g_submits_total.fetch_add(1, std::memory_order_relaxed);
+    Postmortem::MarkStartup("first_submit");
     LOG_DEBUG(Lib_GnmDriver, "called");
 
     if (!dcb_gpu_addrs || !dcb_sizes_in_bytes) {
@@ -2313,11 +2518,84 @@ s32 PS4_SYSV_ABI sceGnmSubmitCommandBuffers(u32 count, const u32* dcb_gpu_addrs[
 int PS4_SYSV_ABI sceGnmSubmitDone() {
     HLE_TRACE;
     LOG_DEBUG(Lib_GnmDriver, "called");
-    WaitGpuIdle();
-    if (!liverpool->IsGpuIdle()) {
-        submission_lock = true;
+    // [GUESTWAIT] This is a blocking drain of the gfx ring - exactly the kind of host wait that
+    // shows up as an anonymous ntdll RIP in the snapshot.
+    Postmortem::GuestWaitScope wait_scope{"sceGnmSubmitDone"};
+    Postmortem::g_last_submit_done_ms.store(Postmortem::NowMs(), std::memory_order_relaxed);
+    StartRipSamplerOnce();
+    // [perf-experiment] SHADPS4_SUBDEPTH: границей кадра служит submitDone —
+    // здесь ждём осушения ТОЛЬКО gfx-кольца (движок ND в FrameBegin следующего
+    // кадра требует записанного gfx-EOP-тика — гонку ловили ассертом
+    // fg-draw-mgr.cpp:234). Асинхронный compute не ждём: ACB-кольца гость
+    // кормит непрерывно и легально держит в WaitRegMem — ожидание их
+    // осушения и есть главный источник лок-степа апстрима (57-86 мс/кадр).
+    if (SubmitDepthOverride() < 0) {
+        WaitGpuIdle();
+        // [GPUIDLE] The race fix is OPT-IN (SHADPS4_SUBMITLOCK_FIX=1) so this build can be
+        // compared against the 17:16 reference byte-for-byte in behaviour. Without it the
+        // original unlocked test-and-set is used, race and all.
+        static const bool submitlock_fix = [] {
+            const char* e = std::getenv("SHADPS4_SUBMITLOCK_FIX");
+            return e != nullptr && e[0] == '1';
+        }();
+        if (!submitlock_fix) {
+            if (!liverpool->IsGpuIdle()) {
+                submission_lock = true;
+                Postmortem::g_submission_lock.store(1, std::memory_order_relaxed);
+                Postmortem::g_sub_inc[0].fetch_add(1, std::memory_order_relaxed);
+            }
+        } else {
+            // [GPUIDLE] The test and the set must be ONE atomic step against the GpuIdle
+            // handler. Previously IsGpuIdle() was read outside m_submission and the flag was
+            // written outside it too: an interrupt landing in that window cleared the flag
+            // BEFORE we set it, so the reset was lost and nothing would ever clear it again -
+            // the frame thread then sat in WaitGpuIdle forever. Holding the lock across both
+            // makes the handler either run entirely before (and IsGpuIdle then reports idle, so
+            // we do not set the flag) or entirely after (and it clears what we just set).
+            // Lock order is safe: the handler takes the IRQ FifoMutex and then m_submission,
+            // while this path holds no IRQ lock and takes nothing under m_submission.
+            std::unique_lock lock{m_submission};
+            if (!liverpool->IsGpuIdle()) {
+                submission_lock = 1;
+                Postmortem::g_submission_lock.store(1, std::memory_order_relaxed);
+                Postmortem::g_sub_inc[0].fetch_add(1, std::memory_order_relaxed);
+            }
+        }
     }
     liverpool->SubmitDone();
+    if (SubmitDepthOverride() >= 0) {
+        // Кадровый пейсинг: дождаться (с таймаутом) осушения gfx-кольца —
+        // все EOP-тики кадра записаны до FrameBegin гостя (ассерт
+        // fg-draw-mgr:234). Покрывает и кадры без флипов (переходы меню).
+        // Compute-кольца не ждём (лок-степ апстрима), дедлок невозможен
+        // благодаря таймауту.
+        static const bool s_sdlog = std::getenv("SHADPS4_STUCKLOG") != nullptr;
+        if (s_sdlog) {
+            using clk = std::chrono::steady_clock;
+            static clk::time_point s_prev{};
+            const auto now = clk::now();
+            const auto interval_ms =
+                s_prev.time_since_epoch().count()
+                    ? std::chrono::duration_cast<std::chrono::milliseconds>(now - s_prev).count()
+                    : 0;
+            s_prev = now;
+            const auto w0 = clk::now();
+            liverpool->WaitForFramePacing(
+                flips_requested.load(std::memory_order_relaxed));
+            const auto wait_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(clk::now() - w0).count();
+            if (interval_ms > 1000 || wait_ms > 500) {
+                LOG_WARNING(Lib_GnmDriver,
+                            "SUBDONE: guest_interval={}ms drain_wait={}ms req={} mat={} stall={}",
+                            interval_ms, wait_ms, flips_requested.load(std::memory_order_relaxed),
+                            AmdGpu::g_flips_materialized.load(std::memory_order_relaxed),
+                            liverpool->IsGfxStalledOnGuestLabel());
+            }
+        } else {
+            liverpool->WaitForFramePacing(
+                flips_requested.load(std::memory_order_relaxed));
+        }
+    }
     send_init_packet = true;
     ++frames_submitted;
     DebugState.IncGnmFrameNum();

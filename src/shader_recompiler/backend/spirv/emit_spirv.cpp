@@ -366,7 +366,9 @@ void DefineEntryPoint(const Info& info, EmitContext& ctx, Id main) {
     spv::ExecutionModel execution_model{};
     switch (info.l_stage) {
     case LogicalStage::Compute: {
-        const std::array<u32, 3> workgroup_size{ctx.runtime_info.cs_info.workgroup_size};
+        std::array<u32, 3> workgroup_size{ctx.runtime_info.cs_info.workgroup_size};
+        // [CSSPLIT] 0 when off: the guest LocalSize, unchanged
+        workgroup_size[0] >>= ctx.cssplit_log2;
         execution_model = spv::ExecutionModel::GLCompute;
         ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, workgroup_size[0],
                              workgroup_size[1], workgroup_size[2]);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "shader_recompiler/frontend/opcodes.h"
+#include <cstdlib>
 #include "shader_recompiler/frontend/translate/translate.h"
 
 namespace Shader::Gcn {
@@ -21,8 +22,9 @@ void Translator::EmitFlowControl(const GcnInst& inst) {
         return;
     case Opcode::S_GETPC_B64:
         return S_GETPC_B64(inst);
-    case Opcode::S_SETPC_B64:
     case Opcode::S_WAITCNT:
+        return S_WAITCNT(inst);
+    case Opcode::S_SETPC_B64:
     case Opcode::S_NOP:
     case Opcode::S_ENDPGM:
     case Opcode::S_CBRANCH_EXECZ:
@@ -43,6 +45,24 @@ void Translator::EmitFlowControl(const GcnInst& inst) {
 
 void Translator::S_BARRIER() {
     ir.Barrier();
+}
+
+void Translator::S_WAITCNT(const GcnInst& inst) {
+    static const bool fence_enabled = [] {
+        const char* e = std::getenv("SHADPS4_WAITCNT_FENCE");
+        return e && e[0] == '1';
+    }();
+    if (!fence_enabled) {
+        return;
+    }
+    // GCN SOPP simm16 for s_waitcnt: vmcnt = [3:0], expcnt = [6:4], lgkmcnt = [12:8]
+    // (vmcnt high bits [15:14] are GCN3+; GCN2/PS4 uses the 4-bit field).
+    const u32 simm = static_cast<u32>(static_cast<u16>(inst.control.sopp.simm));
+    const u32 vmcnt = simm & 0xF;
+    if (vmcnt == 0 && vm_store_pending) {
+        ir.DeviceMemoryBarrier();
+        vm_store_pending = false;
+    }
 }
 
 void Translator::S_GETPC_B64(const GcnInst& inst) {

@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include "common/postmortem.h"
+#include <cstdlib>
+#include "common/logging/log.h"
+#include "common/thread.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -199,7 +204,23 @@ int PthreadCond::Wait(PthreadMutexT* mutex, const OrbisKernelTimespec* abstime, 
 int PS4_SYSV_ABI posix_pthread_cond_wait(PthreadCondT* cond, PthreadMutexT* mutex) {
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
-    return cvp->Wait(mutex, nullptr);
+    static const bool s_tcw = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
+    const auto tcw0 = s_tcw ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+    Postmortem::GuestWaitScope wait_scope{"pthread_cond_wait", reinterpret_cast<u64>(cond),
+                                          reinterpret_cast<u64>(mutex)};
+    const int cw_ret = cvp->Wait(mutex, nullptr);
+    if (s_tcw) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - tcw0)
+                            .count();
+        if (ms > 300) {
+            LOG_WARNING(Kernel_Event, "TRACEWAIT cond: '{}' {}ms cv={:#x}",
+                        Common::GetCurrentThreadName(), ms,
+                        reinterpret_cast<u64>(cond));
+        }
+    }
+    return cw_ret;
 }
 
 int PS4_SYSV_ABI posix_pthread_cond_timedwait(PthreadCondT* cond, PthreadMutexT* mutex,
@@ -211,14 +232,46 @@ int PS4_SYSV_ABI posix_pthread_cond_timedwait(PthreadCondT* cond, PthreadMutexT*
 
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
-    return cvp->Wait(mutex, abstime);
+    static const bool s_tcw = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
+    const auto tcw0 = s_tcw ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+    Postmortem::GuestWaitScope wait_scope{"pthread_cond_timedwait", reinterpret_cast<u64>(cond),
+                                          static_cast<u64>(abstime->tv_sec)};
+    const int cw_ret = cvp->Wait(mutex, abstime);
+    if (s_tcw) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - tcw0)
+                            .count();
+        if (ms > 300) {
+            LOG_WARNING(Kernel_Event, "TRACEWAIT cond: '{}' {}ms cv={:#x}",
+                        Common::GetCurrentThreadName(), ms,
+                        reinterpret_cast<u64>(cond));
+        }
+    }
+    return cw_ret;
 }
 
 int PS4_SYSV_ABI posix_pthread_cond_reltimedwait_np(PthreadCondT* cond, PthreadMutexT* mutex,
                                                     u64 usec) {
+    Postmortem::GuestWaitScope wait_scope{"pthread_cond_reltimedwait", reinterpret_cast<u64>(cond),
+                                          usec};
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
-    return cvp->Wait(mutex, THR_RELTIME, usec);
+    static const bool s_tcw = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
+    const auto tcw0 = s_tcw ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+    const int cw_ret = cvp->Wait(mutex, THR_RELTIME, usec);
+    if (s_tcw) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - tcw0)
+                            .count();
+        if (ms > 300) {
+            LOG_WARNING(Kernel_Event, "TRACEWAIT cond: '{}' {}ms cv={:#x}",
+                        Common::GetCurrentThreadName(), ms,
+                        reinterpret_cast<u64>(cond));
+        }
+    }
+    return cw_ret;
 }
 
 int PthreadCond::Signal(Pthread* thread) {
@@ -332,18 +385,27 @@ int PthreadCond::Broadcast() {
 int PS4_SYSV_ABI posix_pthread_cond_signal(PthreadCondT* cond) {
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
+    if (Parserprof::Enabled()) {
+        Postmortem::NoteCondSignal(reinterpret_cast<u64>(cond), Postmortem::SelfGuestTid(), false);
+    }
     return cvp->Signal(nullptr);
 }
 
 int PS4_SYSV_ABI posix_pthread_cond_signalto_np(PthreadCondT* cond, Pthread* thread) {
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
+    if (Parserprof::Enabled()) {
+        Postmortem::NoteCondSignal(reinterpret_cast<u64>(cond), Postmortem::SelfGuestTid(), false);
+    }
     return cvp->Signal(thread);
 }
 
 int PS4_SYSV_ABI posix_pthread_cond_broadcast(PthreadCondT* cond) {
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
+    if (Parserprof::Enabled()) {
+        Postmortem::NoteCondSignal(reinterpret_cast<u64>(cond), Postmortem::SelfGuestTid(), true);
+    }
     cvp->Broadcast();
     return 0;
 }

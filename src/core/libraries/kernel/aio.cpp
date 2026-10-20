@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <thread>
+#include "common/postmortem.h"
 
 #include "aio.h"
 #include "common/assert.h"
@@ -100,6 +101,8 @@ s32 PS4_SYSV_ABI sceKernelAioWaitRequest(OrbisKernelAioSubmitId id, s32* state, 
 
     s32 timeout = 0;
 
+    Postmortem::GuestWaitScope wait_scope{"sceKernelAioWaitRequest", static_cast<u64>(id),
+                                          usec ? static_cast<u64>(*usec) : 0};
     while (id_state[id] == ORBIS_KERNEL_AIO_STATE_PROCESSING) {
         sceKernelUsleep(10);
 

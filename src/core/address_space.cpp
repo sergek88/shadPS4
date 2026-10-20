@@ -572,6 +572,49 @@ struct AddressSpace::Impl {
         return reserved_regions;
     }
 
+    // BACKIMP: the regions map is the exact record of the MapViewOfFile3 calls we made, so a
+    // region that is mapped from our own backing handle (fd == -1) with a valid phys_base is
+    // one contiguous view of the section starting at that offset. Anything else - private
+    // VirtualAlloc2 regions (phys_base == -1), views of a foreign section or the ReadFile
+    // private-copy branch (fd != -1) - has no stable backing offset and is refused.
+    std::optional<u64> GetBackingOffset(VAddr virtual_addr, u64 size, const char** reason) {
+        const auto refuse = [reason](const char* why) -> std::optional<u64> {
+            if (reason != nullptr) {
+                *reason = why;
+            }
+            return std::nullopt;
+        };
+        if (size == 0) {
+            return refuse("oob");
+        }
+        std::scoped_lock lk{mutex};
+        auto it = regions.upper_bound(virtual_addr);
+        if (it == regions.begin()) {
+            return refuse("oob");
+        }
+        --it;
+        const auto& region = it->second;
+        if (!region.is_mapped) {
+            return refuse("not-mapped");
+        }
+        if (region.fd != -1) {
+            return refuse("fd");
+        }
+        if (region.phys_base == PAddr(-1)) {
+            return refuse("no-phys");
+        }
+        if (virtual_addr < region.base) {
+            return refuse("oob");
+        }
+        const u64 offset_in_region = virtual_addr - region.base;
+        if (offset_in_region > region.size || size > region.size - offset_in_region) {
+            // The range leaves this view - a neighbouring view may well be a different part of
+            // the section, so there is no single offset that describes the whole range.
+            return refuse("split");
+        }
+        return region.phys_base + offset_in_region;
+    }
+
     std::mutex mutex;
     HANDLE process{};
     HANDLE backing_handle{};
@@ -794,6 +837,15 @@ struct AddressSpace::Impl {
         ASSERT_MSG(ret == 0, "mprotect failed: {}", strerror(errno));
     }
 
+    // BACKIMP: only implemented for the Windows placeholder allocator, which keeps an exact
+    // record of every view it created. Elsewhere callers keep their old path.
+    std::optional<u64> GetBackingOffset(VAddr virtual_addr, u64 size, const char** reason) {
+        if (reason != nullptr) {
+            *reason = "unsupported";
+        }
+        return std::nullopt;
+    }
+
     int backing_fd;
     u8* backing_base{};
     u8* system_managed_base{};
@@ -808,6 +860,9 @@ struct AddressSpace::Impl {
 
 AddressSpace::AddressSpace() : impl{std::make_unique<Impl>()} {
     backing_base = impl->backing_base;
+    // Impl's constructor is what grows BackingSize with the configured extra dmem/fmem, so this
+    // has to be read after it ran.
+    backing_size = BackingSize;
     system_managed_base = impl->system_managed_base;
     system_managed_size = impl->system_managed_size;
     system_reserved_base = impl->system_reserved_base;
@@ -837,6 +892,11 @@ void* AddressSpace::MapFile(VAddr virtual_addr, u64 size, u64 offset, u32 prot, 
     return impl->Map(virtual_addr, offset, size, ToPosixProt(std::bit_cast<Core::MemoryProt>(prot)),
                      fd);
 #endif
+}
+
+std::optional<u64> AddressSpace::GetBackingOffset(VAddr virtual_addr, u64 size,
+                                                  const char** reason) const {
+    return impl->GetBackingOffset(virtual_addr, size, reason);
 }
 
 void AddressSpace::Unmap(VAddr virtual_addr, u64 size) {

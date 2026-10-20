@@ -118,6 +118,10 @@ public:
     [[nodiscard]] T SharedAtomicDec(const U32& address, bool is_gds);
 
     [[nodiscard]] U32 ReadConst(const Value& base, const U32& offset);
+    [[nodiscard]] U32 ReadConst(const Value& base, const U32& offset, u32 flags);
+    [[nodiscard]] Value ReadConstX4(const Value& base, const U32& offset, u32 flags);
+    void WriteConst(const Value& base, const U32& offset, const U32& value, u32 flags);
+    void WriteConstX4(const Value& base, const U32& offset, const Value& value, u32 count);
     [[nodiscard]] U32 ReadConstBuffer(const Value& handle, const U32& index, BufferInstInfo info);
 
     [[nodiscard]] U8 LoadBufferU8(const Value& handle, const Value& address, BufferInstInfo info);

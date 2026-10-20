@@ -18,6 +18,7 @@
 #include "core/libraries/kernel/threads/thread_state.h"
 #include "core/libraries/libs.h"
 #include "core/memory.h"
+#include "common/postmortem.h"
 
 #if defined(ARCH_X86_64) || defined(__arm64__) || defined(__aarch64__)
 extern "C" void* PS4_SYSV_ABI _runOnAnotherStack(void* arg, void* func,
@@ -207,6 +208,7 @@ static int JoinThread(PthreadT pthread, void** thread_return, const OrbisKernelT
 }
 
 int PS4_SYSV_ABI posix_pthread_join(PthreadT pthread, void** thread_return) {
+    Postmortem::GuestWaitScope wait_scope{"pthread_join", reinterpret_cast<u64>(pthread)};
     return JoinThread(pthread, thread_return, nullptr);
 }
 
@@ -257,8 +259,33 @@ static void* RunThread(void* arg) {
     auto* curthread = static_cast<Pthread*>(arg);
     g_curthread = curthread;
     Common::SetCurrentThreadName(curthread->name.c_str());
+#ifdef _WIN32
+    // [postmortem] Bootstrap the tick-writer TID by thread name so telemetry does not
+    // depend on the first RINGWATCH hit (arming silently failed in the shield runs).
+    // A later WATCHHIT overwrites this if the name ever stops matching reality.
+    if (curthread->name == "GPU Interrupts Handler GfxEop") {
+        Postmortem::g_tick_writer_tid.store(GetCurrentThreadId(), std::memory_order_relaxed);
+        LOG_CRITICAL(Core, "POSTMORTEM: tick-writer bootstrap tid={}", GetCurrentThreadId());
+    }
+#endif
     DebugState.AddCurrentThreadToGuestList();
+#ifdef _WIN32
+    // [GUESTSTALL] Publish tid+name so the stall watchdog can snapshot guest threads without
+    // any symbol machinery. Removed again below when the thread exits.
+    Postmortem::RegisterGuestThread(GetCurrentThreadId(), curthread->name.c_str());
+#endif
     Core::InitializeTLS();
+#ifdef WIN32
+    {
+        // Guest faults are serviced ON the faulting thread inside the vectored
+        // handler, and that service is heavy (page tracking, readback engine).
+        // Near stack exhaustion the dispatcher cannot even enter the handler
+        // and the process dies instantly with the original fault code - no log,
+        // no WER, nothing. Reserve dispatch headroom up front.
+        ULONG guarantee = 128 * 1024;
+        SetThreadStackGuarantee(&guarantee);
+    }
+#endif
 
     curthread->native_thr->Initialize();
 
@@ -277,6 +304,9 @@ static void* RunThread(void* arg) {
 
     /* Remove thread from tracking */
     DebugState.RemoveCurrentThreadFromGuestList();
+#ifdef _WIN32
+    Postmortem::UnregisterGuestThread(GetCurrentThreadId());
+#endif
     posix_pthread_exit(ret);
 #ifdef WIN32
     return 0;

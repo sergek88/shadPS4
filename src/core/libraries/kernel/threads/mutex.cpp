@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <thread>
+#include "common/postmortem.h"
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/types.h"
@@ -223,6 +224,8 @@ s32 PthreadMutex::Lock(const OrbisKernelTimespec* abstime, u64 usec) {
     }
 
     s32 ret = 0;
+    Postmortem::GuestWaitScope wait_scope{"pthread_mutex_lock(blocking)",
+                                          reinterpret_cast<u64>(this)};
     if (abstime == nullptr) {
         m_lock.lock();
     } else if (abstime != THR_RELTIME && (abstime->tv_nsec < 0 || abstime->tv_nsec >= 1000000000))

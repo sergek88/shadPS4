@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring> // [REMAT-5FA2F0]
 #include "common/alignment.h"
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
+#include "common/postmortem.h"
 #include "common/sha1.h"
 #include "common/string_util.h"
 #include "core/aerolib/aerolib.h"
@@ -142,6 +144,14 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
     LOG_INFO(Core_Linker, "base_virtual_addr ......: {:#018x}", base_virtual_addr);
     LOG_INFO(Core_Linker, "base_size ..............: {:#018x}", base_size);
     LOG_INFO(Core_Linker, "aligned_base_size ......: {:#018x}", aligned_base_size);
+    // The base moves between runs, so a guest crash address means nothing without it.
+    LOG_CRITICAL(Core_Linker, "MODBASE: {} base={:#x} size={:#x}", name, base_virtual_addr,
+                 aligned_base_size);
+    // [GUESTSTALL] Same numbers in a lock-free table, so a stall snapshot can turn a guest RIP
+    // into <module>+0x... without dbghelp.
+    Postmortem::RegisterGuestModule(name.c_str(), base_virtual_addr, aligned_base_size);
+    Postmortem::MarkStartup("first_module");
+    Postmortem::g_module_count.fetch_add(1, std::memory_order_relaxed);
 
     const auto add_segment = [this](const elf_program_header& phdr, bool do_map = true) {
         const VAddr segment_vaddr = base_virtual_addr + phdr.p_vaddr;
@@ -286,10 +296,19 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
         u64 control_flow_instruction_count{};
         u64 unrelocatable_instruction_count{};
         u64 unsupported_cpu_patch_instruction_count{};
+        // [REDZONE-PATCH] The upstream summary below is LOG_DEBUG, which the stand's log level
+        // never shows - and a fix nobody can prove ran is not a fix (project rule). One critical
+        // line per module with the totals the A/B needs.
+        u64 rz_red_zone_functions{};
+        u64 rz_memory_instructions{};
+        u64 rz_patched{};
         for (const auto& [segment_addr, segment_size] : executable_segments) {
             // Windows static guest red-zone protection
             const auto result =
                 PatchRedZoneMemoryInstructions(segment_addr, segment_size, function_starts);
+            rz_red_zone_functions += result.red_zone_function_count;
+            rz_memory_instructions += result.memory_instruction_count;
+            rz_patched += result.patched_memory_instruction_count;
             analyzed_function_count += result.function_count;
             stack_dependent_instruction_count += result.stack_dependent_memory_instruction_count;
             control_flow_instruction_count += result.control_flow_memory_instruction_count;
@@ -329,6 +348,12 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
                 name, stack_dependent_instruction_count, control_flow_instruction_count,
                 unrelocatable_instruction_count, unsupported_cpu_patch_instruction_count);
         }
+        LOG_CRITICAL(Core_Linker,
+                     "REDZONE-PATCH {}: red-zone functions={} memory instructions={} patched={} "
+                     "(stack-dependent={} control-flow={} unrelocatable={} unsupported={})",
+                     name, rz_red_zone_functions, rz_memory_instructions, rz_patched,
+                     stack_dependent_instruction_count, control_flow_instruction_count,
+                     unrelocatable_instruction_count, unsupported_cpu_patch_instruction_count);
     }
 #endif
 
@@ -342,6 +367,56 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
             MemoryPatcher::OnGameLoaded();
         }
     }
+
+#if defined(ARCH_X86_64) && defined(_WIN32)
+    // [REMAT-5FA2F0] SHADPS4_REMAT_5FA2F0=1 (Uncharted CUSA02320 only, off by default).
+    //
+    // The guest function at eboot+0x5fa2f0 keeps two loop values in its red zone:
+    //   [rsp-8]    = r10 + 0x10      (written at 0x5fa311)
+    //   [rsp-0x10] = r11 - 1         (written at 0x5fa31a)
+    // and reads them back at 0x5fa34e / 0x5fa357. Neither r10 nor r11 is touched in between
+    // (verified instruction by instruction over 0x5fa330..0x5fa447 against live CRASHDUMP bytes),
+    // so both values can simply be recomputed instead of loaded. That matters because the
+    // exception-dispatch frame Windows builds on this thread lands on top of the red zone - the
+    // native probe of 09.09 wiped all 16 canaries at [rsp-8k] on every alignment - and in all
+    // nine crashes at eboot+0x5fa3d5 the reloaded [rsp-0x10] came back as 0
+    // ((rbx-r10)/16 == rsi+rdx+1 and r15 == -rsi in every dump), sending the loop past the end
+    // of its table into the allocator's next block.
+    //
+    //   0x5fa34e: 48 8B 4C 24 F8   mov rcx,[rsp-8]     -> 49 8D 4A 10 90   lea rcx,[r10+0x10]; nop
+    //   0x5fa357: 4C 8B 7C 24 F0   mov r15,[rsp-0x10]  -> 4D 8D 7B FF 90   lea r15,[r11-1];   nop
+    //
+    // Same length, same flags, rsp untouched: the fix works whoever writes the frame.
+    if (name == "eboot.bin") {
+        static const bool remat = [] {
+            const char* e = std::getenv("SHADPS4_REMAT_5FA2F0");
+            return e != nullptr && e[0] == '1';
+        }();
+        if (remat) {
+            constexpr u64 kOffset = 0x5fa34e;
+            static constexpr u8 kExpect[14] = {0x48, 0x8B, 0x4C, 0x24, 0xF8, 0x4A, 0x8D,
+                                               0x1C, 0x31, 0x4C, 0x8B, 0x7C, 0x24, 0xF0};
+            static constexpr u8 kPatch[14] = {0x49, 0x8D, 0x4A, 0x10, 0x90, 0x4A, 0x8D,
+                                              0x1C, 0x31, 0x4D, 0x8D, 0x7B, 0xFF, 0x90};
+            if (kOffset + sizeof(kExpect) <= base_size) {
+                auto* code = reinterpret_cast<u8*>(base_virtual_addr + kOffset);
+                if (std::memcmp(code, kExpect, sizeof(kExpect)) == 0) {
+                    std::memcpy(code, kPatch, sizeof(kPatch));
+                    LOG_CRITICAL(Core_Linker, "REMAT-5FA2F0: applied at {:#x}",
+                                 base_virtual_addr + kOffset);
+                } else {
+                    LOG_CRITICAL(Core_Linker,
+                                 "REMAT-5FA2F0: NOT applied at {:#x} - bytes differ "
+                                 "({:02x} {:02x} {:02x} {:02x} {:02x} ...)",
+                                 base_virtual_addr + kOffset, code[0], code[1], code[2], code[3],
+                                 code[4]);
+                }
+            } else {
+                LOG_CRITICAL(Core_Linker, "REMAT-5FA2F0: NOT applied - offset past image size");
+            }
+        }
+    }
+#endif
 }
 
 void Module::LoadDynamicInfo() {

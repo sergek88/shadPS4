@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include "common/postmortem.h"
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -153,6 +155,10 @@ s32 PS4_SYSV_ABI sceVideoOutIsFlipPending(s32 handle) {
 }
 
 s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 bufferIndex, s32 flipMode, s64 flipArg) {
+    // [GUESTSTALL-TIME] The guest ASKING for a flip; the presenter actually performing it is
+    // stamped separately in VideoOutDriver::Flip. A gap between the two names the culprit.
+    Postmortem::g_last_flip_req_ms.store(Postmortem::NowMs(), std::memory_order_relaxed);
+    Postmortem::g_flip_reqs_total.fetch_add(1, std::memory_order_relaxed);
     auto* port = driver->GetPort(handle);
     if (!port) {
         LOG_ERROR(Lib_VideoOut, "Invalid handle = {}", handle);
@@ -295,8 +301,10 @@ s32 PS4_SYSV_ABI sceVideoOutGetResolutionStatus(s32 handle, SceVideoOutResolutio
     return ORBIS_OK;
 }
 
+// [STARTUP2] The guest opening video out - everything before this is loader + our init.
 s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId userId, s32 busType,
                                  s32 index, const void* param) {
+    Postmortem::MarkStartup("videoout_open");
     LOG_INFO(Lib_VideoOut, "called");
     ASSERT(busType == SCE_VIDEO_OUT_BUS_TYPE_MAIN);
 
@@ -352,6 +360,10 @@ s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, voi
         Platform::InterruptId::GfxFlip, [=](Platform::InterruptId irq) {
             ASSERT_MSG(irq == Platform::InterruptId::GfxFlip, "An unexpected IRQ occured");
             ASSERT_MSG(port->buffer_labels[buf_id] == 1, "Out of order flip IRQ");
+            static const bool s_fc2 = std::getenv("SHADPS4_STUCKLOG") != nullptr;
+            if (s_fc2) {
+                LOG_WARNING(Lib_VideoOut, "FLIPCHAIN submit buf={}", buf_id);
+            }
             const auto result = driver->SubmitFlip(port, buf_id, flip_arg, true);
             ASSERT_MSG(result, "EOP flip submission failed");
         });
@@ -377,9 +389,11 @@ s32 PS4_SYSV_ABI sceVideoOutWaitVblank(s32 handle) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
     }
 
+    Postmortem::GuestWaitScope wait_scope{"sceVideoOutWaitVblank", static_cast<u64>(handle)};
     std::unique_lock lock{port->vo_mutex};
     const auto prev_counter = port->vblank_status.count;
     port->vblank_cv.wait(lock, [&]() { return prev_counter != port->vblank_status.count; });
+    Postmortem::g_last_vblank_ms.store(Postmortem::NowMs(), std::memory_order_relaxed);
     return ORBIS_OK;
 }
 

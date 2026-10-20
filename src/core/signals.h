@@ -15,6 +15,10 @@
 #endif
 namespace Core {
 
+/// [debug] Arm a hardware write watchpoint on a guest address across all threads; hits are
+/// reported as WATCHHIT with the writer's instruction pointer.
+void ArmWriteWatch(u64 address);
+
 using AccessViolationHandler = bool (*)(void* context, void* fault_address);
 using IllegalInstructionHandler = bool (*)(void* context);
 

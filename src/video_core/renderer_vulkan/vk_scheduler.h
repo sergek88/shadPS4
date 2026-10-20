@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -347,7 +348,7 @@ struct DynamicState {
 
 class Scheduler {
 public:
-    explicit Scheduler(const Instance& instance);
+    explicit Scheduler(const Instance& instance, bool use_present_queue = false);
     ~Scheduler();
 
     /// Sends the current execution context to the GPU
@@ -407,6 +408,17 @@ public:
         return &master_semaphore;
     }
 
+    /// True when every tick submitted so far has retired on the GPU. Refreshes
+    /// the semaphore counter, so it is safe to poll from any thread.
+    [[nodiscard]] bool AllSubmittedRetired() {
+        const u64 last_submitted = master_semaphore.CurrentTick() - 1;
+        if (master_semaphore.KnownGpuTick() >= last_submitted) {
+            return true;
+        }
+        master_semaphore.Refresh();
+        return master_semaphore.KnownGpuTick() >= last_submitted;
+    }
+
     /// Defers an operation until the gpu has reached the current cpu tick.
     /// Will be run when submitting or calling PopPendingOperations.
     void DeferOperation(Common::UniqueFunction<void>&& func) {
@@ -424,6 +436,14 @@ public:
         priority_pending_ops_cv.notify_one();
     }
 
+    /// [CSBATCH] Runs at the top of SubmitExecution, BEFORE submit_mutex and NextTick(): a
+    /// pending batch of the skinning worker is recorded into the cmdbuf that is about to be
+    /// submitted, whichever path ends the tick (Flush, Finish, Wait, a StreamBuffer wait).
+    /// Installed only when SHADPS4_CSBATCH is set; one branch per submit otherwise.
+    void SetPreSubmitHook(std::function<void()> f) {
+        pre_submit_hook = std::move(f);
+    }
+
     static std::mutex submit_mutex;
 
 private:
@@ -435,6 +455,9 @@ private:
 
 private:
     const Instance& instance;
+    // Куда сабмитит этот шедулер: презент-шедулер уходит на отдельную
+    // очередь, чтобы клин презент-цепочки не парковал основную.
+    vk::Queue submit_queue;
     MasterSemaphore master_semaphore;
     CommandPool command_pool;
     DynamicState dynamic_state;
@@ -453,6 +476,7 @@ private:
     RenderState render_state;
     bool is_rendering = false;
     tracy::VkCtxScope* profiler_scope{};
+    std::function<void()> pre_submit_hook; // [CSBATCH]
 };
 
 } // namespace Vulkan

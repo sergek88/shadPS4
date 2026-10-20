@@ -194,6 +194,7 @@ TileManager::Result TileManager::DetileImage(vk::Buffer in_buffer, u32 in_offset
     scheduler.EndRendering();
 
     const auto cmdbuf = scheduler.CommandBuffer();
+    Vulkan::InvalidateBoundPipeline();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, GetTilingPipeline(info, false));
 
     const vk::DescriptorBufferInfo tiled_buffer_info{
@@ -237,6 +238,10 @@ TileManager::Result TileManager::DetileImage(vk::Buffer in_buffer, u32 in_offset
     cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pl_layout, 0, set_writes);
 
     const auto dim_x = (info.guest_size / (info.num_bits / 8)) / 64;
+    if (instance.HasNvCheckpoints()) {
+        // Bit 60 marks detiler dispatches; low bits carry dim_x.
+        cmdbuf.setCheckpointNV(reinterpret_cast<const void*>((1ULL << 60) | dim_x));
+    }
     cmdbuf.dispatch(dim_x, 1, 1);
     return {out_buffer, 0};
 }
@@ -278,6 +283,8 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
 
     const auto cmdbuf = scheduler.CommandBuffer();
     in_image.Download(buffer_copies, temp_buffer, 0, copy_size);
+
+    Vulkan::InvalidateBoundPipeline();
 
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, GetTilingPipeline(info, true));
 
@@ -322,6 +329,10 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
     cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pl_layout, 0, set_writes);
 
     const auto dim_x = (info.guest_size / (info.num_bits / 8)) / 64;
+    if (instance.HasNvCheckpoints()) {
+        // Bit 59 marks tiler dispatches; low bits carry dim_x.
+        cmdbuf.setCheckpointNV(reinterpret_cast<const void*>((1ULL << 59) | dim_x));
+    }
     cmdbuf.dispatch(dim_x, 1, 1);
 }
 

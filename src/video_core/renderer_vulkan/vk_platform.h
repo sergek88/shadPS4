@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <fmt/format.h>
 
 #include "common/assert.h"
@@ -26,6 +27,16 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
                                   bool enable_crash_diagnostic);
 
 vk::UniqueDebugUtilsMessengerEXT CreateDebugCallback(vk::Instance instance);
+
+// [R8 ADDRBIND] SHADPS4_ADDRBIND=1: pure DEVFAULT diagnostics via
+// VK_EXT_device_address_binding_report. Default-off.
+bool AddrBindEnabled();
+vk::UniqueDebugUtilsMessengerEXT CreateAddrBindMessenger(vk::Instance instance);
+namespace AddrBind {
+void DumpRing();
+u64 TotalEvents(); // every address-binding callback delivery, before any filter
+extern std::atomic<u64> unbind_shader_region; // unbinds in 0x2'0000'0000..0x2'0010'0000
+} // namespace AddrBind
 
 template <typename T>
 concept VulkanHandleType = vk::isVulkanHandleType<T>::value;

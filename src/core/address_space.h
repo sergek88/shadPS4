@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <boost/icl/separate_interval_set.hpp>
 #include "common/arch.h"
 #include "common/enum.h"
@@ -32,6 +33,22 @@ public:
     [[nodiscard]] u8* BackingBase() const noexcept {
         return backing_base;
     }
+
+    /// Total size of the backing section (single SEC_COMMIT mapping at BackingBase()).
+    [[nodiscard]] u64 GetBackingSize() const noexcept {
+        return backing_size;
+    }
+
+    /**
+     * @brief BACKIMP: translates a guest virtual range into an offset inside the backing section.
+     *        Succeeds ONLY when the whole [virtual_addr, virtual_addr + size) range is covered by a
+     *        single contiguous view of the backing section at one section offset. Private mappings,
+     *        file-backed copies (fd != -1) and ranges spanning several views all return nullopt so
+     *        callers can fall back to their old path. When given, *reason receives a static
+     *        string describing the refusal (not-mapped / fd / no-phys / split / oob).
+     */
+    [[nodiscard]] std::optional<u64> GetBackingOffset(VAddr virtual_addr, u64 size,
+                                                      const char** reason = nullptr) const;
 
     [[nodiscard]] VAddr SystemManagedVirtualBase() noexcept {
         return reinterpret_cast<VAddr>(system_managed_base);
@@ -91,6 +108,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl;
     u8* backing_base{};
+    u64 backing_size{};
     u8* system_managed_base{};
     u64 system_managed_size{};
     u8* system_reserved_base{};

@@ -69,6 +69,10 @@ public:
                            AmdGpu::Liverpool* liverpool);
     ~PipelineCache();
 
+    // Persist the driver pipeline cache so the next run starts warm.
+    void SavePipelineCache();
+    void MaybeSavePipelineCache();
+
     void WarmUp();
     void Sync();
 
@@ -78,7 +82,9 @@ public:
 
     const GraphicsPipeline* GetGraphicsPipeline();
 
-    const ComputePipeline* GetComputePipeline();
+    // [CSSPLIT] allow_cssplit = false selects the unsplit permutation of a listed shader
+    // (indirect args, or a grid with dim_y/dim_z != 1). No default: both call sites state intent.
+    const ComputePipeline* GetComputePipeline(bool allow_cssplit);
 
     using Result = std::tuple<const Shader::Info*, vk::ShaderModule,
                               std::optional<Shader::Gcn::FetchShaderData>, u64>;
@@ -95,10 +101,19 @@ public:
         return profile;
     }
 
+    // [CSSPLIT] valid after GetComputePipeline(): grid multiplier the selected permutation was
+    // compiled for (1 when off/declined), and whether the env lists this shader at all.
+    u32 ComputeSplitK() const {
+        return 1u << cssplit_eff_log2;
+    }
+    bool ComputeSplitListed() const {
+        return cssplit_listed_log2 != 0;
+    }
+
 private:
     bool RefreshGraphicsKey();
     bool RefreshGraphicsStages();
-    bool RefreshComputeKey();
+    bool RefreshComputeKey(bool allow_cssplit);
 
     void DumpShader(std::span<const u32> code, u64 hash, Shader::Stage stage, size_t perm_idx,
                     std::string_view ext);
@@ -131,12 +146,16 @@ private:
     std::optional<Shader::Gcn::FetchShaderData> fetch_shader{};
     GraphicsPipelineKey graphics_key{};
     ComputePipelineKey compute_key{};
+    u8 cssplit_listed_log2{}; // [CSSPLIT] SHADPS4_CSSPLIT entry for the current CS hash (0 = none)
+    u8 cssplit_ask_log2{};    // [CSSPLIT] what this dispatch may use (0 for indirect / 2-D / 3-D)
+    u8 cssplit_eff_log2{};    // [CSSPLIT] what the selected permutation applies
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
 
     // Only if Config::collectShadersForDebug()
     tsl::robin_map<vk::ShaderModule,
                    std::vector<std::variant<GraphicsPipelineKey, ComputePipelineKey>>>
         module_related_pipelines;
+    u32 compiles_since_save{0};
 };
 
 } // namespace Vulkan

@@ -434,6 +434,25 @@ U32 IREmitter::ReadConst(const Value& base, const U32& offset) {
     return Inst<U32>(Opcode::ReadConst, base, offset);
 }
 
+U32 IREmitter::ReadConst(const Value& base, const U32& offset, u32 flags) {
+    return Inst<U32>(Opcode::ReadConst, Flags{flags}, base, offset);
+}
+
+// [LIVEVEC4] Four consecutive live dwords through one page-table walk (job-worker data loops).
+Value IREmitter::ReadConstX4(const Value& base, const U32& offset, u32 flags) {
+    return Inst<Value>(Opcode::ReadConstX4, Flags{flags}, base, offset);
+}
+
+void IREmitter::WriteConst(const Value& base, const U32& offset, const U32& value, u32 flags) {
+    Inst(Opcode::WriteConst, Flags{flags}, base, offset, value);
+}
+
+// [LIVEVEC4] 2..4 consecutive live dwords (padded to a U32x4) through one page-table walk;
+// the flags carry the dword count.
+void IREmitter::WriteConstX4(const Value& base, const U32& offset, const Value& value, u32 count) {
+    Inst(Opcode::WriteConstX4, Flags{count}, base, offset, value);
+}
+
 U32 IREmitter::ReadConstBuffer(const Value& handle, const U32& index, BufferInstInfo info) {
     return Inst<U32>(Opcode::ReadConstBuffer, Flags{info}, handle, index);
 }

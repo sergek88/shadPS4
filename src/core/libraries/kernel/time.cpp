@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include "common/postmortem.h"
+#include "common/thread.h"
 #include <ctime>
 #include <thread>
 
@@ -54,6 +57,14 @@ u64 PS4_SYSV_ABI sceKernelReadTsc() {
 
 static s32 posix_nanosleep_impl(const OrbisKernelTimespec* rqtp, OrbisKernelTimespec* rmtp,
                                 const bool interruptible) {
+    {
+        static const bool s_tns = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
+        if (s_tns && rqtp && (rqtp->tv_sec > 0 || rqtp->tv_nsec > 300'000'000)) {
+            LOG_WARNING(Kernel_Event, "TRACEWAIT sleep: '{}' {}ms requested",
+                        Common::GetCurrentThreadName(),
+                        rqtp->tv_sec * 1000 + rqtp->tv_nsec / 1'000'000);
+        }
+    }
     if (!rqtp || rqtp->tv_sec < 0 || rqtp->tv_nsec < 0 || rqtp->tv_nsec >= 1'000'000'000) {
         SetPosixErrno(EINVAL);
         return -1;
@@ -73,10 +84,16 @@ static s32 posix_nanosleep_impl(const OrbisKernelTimespec* rqtp, OrbisKernelTime
 }
 
 s32 PS4_SYSV_ABI posix_nanosleep(const OrbisKernelTimespec* rqtp, OrbisKernelTimespec* rmtp) {
+    Postmortem::GuestWaitScope wait_scope{"nanosleep",
+                                          rqtp ? static_cast<u64>(rqtp->tv_sec) : 0,
+                                          rqtp ? static_cast<u64>(rqtp->tv_nsec) : 0};
     return posix_nanosleep_impl(rqtp, rmtp, true);
 }
 
 s32 PS4_SYSV_ABI sceKernelNanosleep(const OrbisKernelTimespec* rqtp, OrbisKernelTimespec* rmtp) {
+    Postmortem::GuestWaitScope wait_scope{"sceKernelNanosleep",
+                                          rqtp ? static_cast<u64>(rqtp->tv_sec) : 0,
+                                          rqtp ? static_cast<u64>(rqtp->tv_nsec) : 0};
     if (const auto ret = posix_nanosleep_impl(rqtp, rmtp, false); ret < 0) {
         return ErrnoToSceKernelError(*__Error());
     }

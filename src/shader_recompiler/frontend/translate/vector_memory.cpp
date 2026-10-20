@@ -273,6 +273,7 @@ void Translator::BUFFER_LOAD(u32 num_dwords, bool is_inst_typed, bool is_buffer_
 
 void Translator::BUFFER_STORE(u32 num_dwords, bool is_inst_typed, bool is_buffer_typed,
                               const GcnInst& inst, u32 scalar_width) {
+    vm_store_pending = true; // [WAITFENCE]
     const auto& mubuf = inst.control.mubuf;
     const IR::VectorReg vaddr{inst.src[0].code};
     const IR::ScalarReg sharp{inst.src[2].code * 4};
@@ -456,6 +457,7 @@ void Translator::IMAGE_LOAD(bool has_mip, const GcnInst& inst) {
 }
 
 void Translator::IMAGE_STORE(bool has_mip, const GcnInst& inst) {
+    vm_store_pending = true; // [WAITFENCE]
     const auto& mimg = inst.control.mimg;
     IR::VectorReg addr_reg{inst.src[0].code};
     IR::VectorReg data_reg{inst.dst[0].code};

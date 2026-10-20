@@ -215,9 +215,19 @@ struct ComputeRuntimeInfo {
     u32 shared_memory_size;
     std::array<u32, 3> workgroup_size;
     std::array<bool, 3> tgid_enable;
+    // [CSSPLIT] log2 of the workgroup split asked for by SHADPS4_CSSPLIT for THIS dispatch
+    // (0 = none). Part of the permutation key: a listed shader gets one module compiled with
+    // LocalSize S>>req, plus a second unsplit one for indirect / 2-D / 3-D dispatches.
+    u8 cssplit_req_log2;
+    // [CSSPLIT] what the backend actually applied (0 = declined/off). Not part of the key; the
+    // pipeline cache stamps it into the permutation's spec after the compile and the dispatch
+    // multiplies dim_x by 1<<eff of the permutation it binds - module and grid share one record.
+    // Both fields live in the union padding: sizeof(RuntimeInfo) and the raw spec blob are unchanged.
+    u8 cssplit_eff_log2;
 
     bool operator==(const ComputeRuntimeInfo& other) const noexcept {
-        return workgroup_size == other.workgroup_size && tgid_enable == other.tgid_enable;
+        return workgroup_size == other.workgroup_size && tgid_enable == other.tgid_enable &&
+               cssplit_req_log2 == other.cssplit_req_log2;
     }
 };
 

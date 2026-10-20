@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include "common/assert.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
@@ -58,7 +59,22 @@ Id EmitGetUserData(EmitContext& ctx, IR::ScalarReg reg) {
 
 Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
     const u32 flatbuf_off_dw = inst->Flags<u32>();
-    if (!EmulatorSettings.IsDirectMemoryAccessEnabled()) {
+    // Rewritten unbounded-V# accesses only exist when DMA is enabled and have
+    // no flatbuffer fallback: they must stay volatile polling reads.
+    if (flatbuf_off_dw == Shader::Info::LiveReadConstFlag) {
+        // [LIVENV] scalar live reads stay volatile even for listed shaders: the loop-control
+        // loads (queue index / flags) are polls, and non-volatile ones hung the game on the
+        // deck (liveloop44). Only the vec4 record loads take the non-volatile flavour.
+        return ctx.OpFunctionCall(ctx.U32[1], ctx.read_const_live, addr, offset);
+    }
+    // [POLLJ] poll-loop read: the tracing flavour when it was defined (env on), else plain live
+    if (flatbuf_off_dw == Shader::Info::PollReadConstFlag) {
+        const Id fn = Sirit::ValidId(ctx.read_const_live_poll) ? ctx.read_const_live_poll
+                                                               : ctx.read_const_live;
+        return ctx.OpFunctionCall(ctx.U32[1], fn, addr, offset);
+    }
+    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() ||
+        IsDmaMutedByBisect(ctx.info.pgm_hash)) {
         return ctx.EmitFlatbufferLoad(ctx.ConstU32(flatbuf_off_dw));
     }
     // We can only provide a fallback for immediate offsets.
@@ -68,6 +84,27 @@ Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
         return ctx.OpFunctionCall(ctx.U32[1], ctx.read_const, addr, offset,
                                   ctx.ConstU32(flatbuf_off_dw));
     }
+}
+
+// [LIVEVEC4] Live vec4 read: one page-table walk per 16 bytes (DefineReadConstLiveX4).
+Id EmitReadConstX4(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
+    if (Sirit::ValidId(ctx.read_const_live_x4_nv)) {
+        return ctx.OpFunctionCall(ctx.U32[4], ctx.read_const_live_x4_nv, addr, offset);
+    }
+    return ctx.OpFunctionCall(ctx.U32[4], ctx.read_const_live_x4, addr, offset);
+}
+
+// [LIVEVEC4] Live vector store: the dword count sits in the flags (2..4).
+void EmitWriteConstX4(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset, Id value) {
+    const u32 count = std::clamp(inst->Flags<u32>(), 2u, 4u);
+    ctx.OpFunctionCall(ctx.void_id, ctx.write_const_live_x[count], addr, offset, value);
+}
+
+void EmitWriteConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset, Id value) {
+    // Live store through the BDA page table: lands in imported host memory
+    // (or a cached VRAM page when one owns the address) with volatile
+    // semantics, so the CPU and other dispatches observe it immediately.
+    ctx.OpFunctionCall(ctx.void_id, ctx.write_const_live, addr, offset, value);
 }
 
 Id EmitReadConstBuffer(EmitContext& ctx, u32 handle, Id index) {
@@ -157,11 +194,30 @@ Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, u32 comp) {
         return ctx.OpLoad(ctx.U32[1], ctx.instance_id);
     case IR::Attribute::WorkgroupIndex:
         return ctx.workgroup_index_id;
-    case IR::Attribute::WorkgroupId:
-        return ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), comp);
-    case IR::Attribute::LocalInvocationId:
-        return ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.local_invocation_id),
-                                      comp);
+    case IR::Attribute::WorkgroupId: {
+        const Id id =
+            ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), comp);
+        if (comp == 0 && ctx.cssplit_log2 != 0) {
+            // [CSSPLIT] virtual group = real group / K
+            return ctx.OpShiftRightLogical(ctx.U32[1], id, ctx.ConstU32(ctx.cssplit_log2));
+        }
+        return id;
+    }
+    case IR::Attribute::LocalInvocationId: {
+        const Id id = ctx.OpCompositeExtract(ctx.U32[1],
+                                             ctx.OpLoad(ctx.U32[3], ctx.local_invocation_id), comp);
+        if (comp == 0 && ctx.cssplit_log2 != 0) {
+            // [CSSPLIT] virtual local = (real group mod K) * (S/K) + real local, so the guest's
+            // wg*S + local is the unchanged global invocation index
+            const Id wg =
+                ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0u);
+            const Id sub =
+                ctx.OpBitwiseAnd(ctx.U32[1], wg, ctx.ConstU32((1u << ctx.cssplit_log2) - 1u));
+            return ctx.OpIAdd(ctx.U32[1],
+                              ctx.OpIMul(ctx.U32[1], sub, ctx.ConstU32(ctx.cssplit_local)), id);
+        }
+        return id;
+    }
     case IR::Attribute::IsFrontFace:
         return ctx.OpSelect(ctx.U32[1], ctx.OpLoad(ctx.U1[1], ctx.front_facing), ctx.u32_one_value,
                             ctx.u32_zero_value);

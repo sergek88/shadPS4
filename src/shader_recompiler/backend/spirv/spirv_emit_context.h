@@ -144,20 +144,29 @@ public:
         return last_label;
     }
 
-    Id EmitDwordMemoryRead(Id address, auto&& fallback) {
+    /// [BDACACHE] `walker` replaces the page-table walk with the caching wrapper for this read;
+    /// an empty id means the honest walk - which is what every module compiled with
+    /// SHADPS4_BDACACHE off emits, byte for byte.
+    Id EmitDwordMemoryRead(Id address, auto&& fallback, bool is_volatile = false,
+                           Id walker = Id{}) {
         const Id available_label = OpLabel();
         const Id fallback_label = OpLabel();
         const Id merge_label = OpLabel();
 
-        const Id addr = OpFunctionCall(U64, get_bda_pointer, address);
+        const Id addr = OpFunctionCall(U64, Sirit::ValidId(walker) ? walker : get_bda_pointer,
+                                       address);
         const Id is_available = OpINotEqual(U1[1], addr, u64_zero_value);
         OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
         OpBranchConditional(is_available, available_label, fallback_label);
 
-        // Available
+        // Available. Volatile keeps polling loops re-reading memory that the
+        // CPU or another GPU queue updates while this dispatch is running.
         AddLabel(available_label);
         const Id addr_ptr = OpConvertUToPtr(physical_pointer_type_u32, addr);
-        const Id result = OpLoad(U32[1], addr_ptr, spv::MemoryAccessMask::Aligned, 4u);
+        const auto access_mask = is_volatile
+                                     ? (spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned)
+                                     : spv::MemoryAccessMask::Aligned;
+        const Id result = OpLoad(U32[1], addr_ptr, access_mask, 4u);
         OpBranch(merge_label);
 
         // Fallback
@@ -267,6 +276,12 @@ public:
     Id output_tess_level_inner{};
     Id tess_coord;
     std::array<Id, 30> patches{};
+
+    // [CSSPLIT] 0 = off. When set: LocalSize.x = workgroup_size[0] >> cssplit_log2, and the x
+    // components of WorkgroupId / LocalInvocationId are rewritten in EmitGetAttributeU32 so the
+    // guest still sees wg*S + local == global invocation index.
+    u32 cssplit_log2{};
+    u32 cssplit_local{}; // host LocalSize.x = S >> cssplit_log2
 
     Id workgroup_id{};
     Id num_workgroups_id{};
@@ -381,12 +396,29 @@ public:
     Id f32_to_uf10{};
 
     Id get_bda_pointer{};
+    /// [BDACACHE] get_bda_pointer wrapped in a one-entry per-invocation translation cache
+    /// (SHADPS4_BDACACHE); empty unless the env asked for it.
+    Id get_bda_pointer_cached{};
+    Id pj_last_page{};  // [PJCACHE] Private u32: last page this invocation flagged in the page journal
+    Id bdacache_page{}; // Private u32: page id of the cached entry, 0xFFFFFFFF = nothing cached
+    Id bdacache_base{}; // Private u64: the cached page-table entry itself (result - offset)
 
     Id read_const{};
     Id read_const_dynamic{};
+    Id read_const_live{};
+    Id read_const_live_x4{}; // [LIVEVEC4] four live dwords through one page-table walk
+    Id read_const_live_nv{};    // [LIVENV] live read without Volatile (data loops of listed workers)
+    Id read_const_live_x4_nv{}; // [LIVENV] vec4 flavour
+    Id read_const_live_poll{}; // [POLLJ] live read that stamps the polled page (presence window)
+                               // [POLLMAP] and/or marks it in the host-visible poll bitmap
+    Id write_const_live{};
+    std::array<Id, 5> write_const_live_x{}; // [LIVEVEC4] live vector store, index = dword count
 
 private:
     void DefineArithmeticTypes();
+    /// [CSSPLIT] turn runtime_info.cs_info.cssplit_req_log2 into cssplit_log2/cssplit_local or
+    /// decline on the Info flags; reports the applied value through info.cssplit_eff_log2.
+    void SetupCsSplit();
     void DefineInterfaces();
     void DefineInputs();
     void DefineVertexBlock();
@@ -407,8 +439,21 @@ private:
     Id DefineUfloatM5ToFloat32(u32 mantissa_bits, std::string_view name);
 
     Id DefineGetBdaPointer();
+    /// [BDACACHE] SHADPS4_BDACACHE=1|2: get_bda_pointer plus a one-entry per-invocation cache of
+    /// the last resolved page. Level 1 = non-volatile reads, 2 = + the volatile vec4 record loads.
+    Id DefineGetBdaPointerCached();
 
-    Id DefineReadConst(bool dynamic);
+    Id DefineReadConst(bool dynamic, bool live = false, bool is_volatile = true);
+    Id DefineReadConstLiveX4(bool is_volatile = true);
+    /// [POLLJ] read_const_live + presence-window store; only when SHADPS4_PAGETRACE_POLLJ is on.
+    /// [POLLMAP] + poll-bitmap mark (SHADPS4_POLLMAP=1); each part gated on its own env.
+    Id DefineReadConstLivePoll();
+    /// [LIVENV] SHADPS4_LIVE_NONVOLATILE=hex,hex|all: shaders whose live reads drop Volatile.
+    [[nodiscard]] bool LiveReadsNonVolatile() const;
+    Id DefineWriteConst();
+    Id DefineWriteConstX(u32 count, bool batch_journal);
+    /// [DROPLOG] append {addr, value} of a write the walk could not place (bda == 0)
+    void EmitDropLog(Id addr, Id value);
 
     Id GetBufferSize(u32 sharp_idx);
 };

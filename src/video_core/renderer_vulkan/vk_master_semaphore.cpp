@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <limits>
+#include "common/postmortem.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 
@@ -62,6 +63,8 @@ void MasterSemaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
+    Postmortem::HostWaitScope wait_scope{"vkWaitSemaphores", tick,
+                                        gpu_tick.load(std::memory_order_relaxed)};
     while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
     }
     Refresh();

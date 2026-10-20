@@ -1,6 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include "common/postmortem.h"
+#include <cstring>
+#include <chrono>
+#include <limits>
+#include <thread>
+#include <utility>
+#include <vector>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -18,7 +26,497 @@
 
 namespace Vulkan {
 
+// [IMPORTPROBE] Manual WinAPI prototypes (no windows.h), same style as FastDieNow in
+// vk_presenter.cpp. Only used by the SHADPS4_IMPORT_PROBE diagnostic path.
+#ifdef _WIN32
+extern "C" __declspec(dllimport) void* __stdcall VirtualAlloc(void*, size_t, unsigned long,
+                                                              unsigned long);
+extern "C" __declspec(dllimport) int __stdcall VirtualFree(void*, size_t, unsigned long);
+extern "C" __declspec(dllimport) int __stdcall TerminateProcess(void*, unsigned int);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentProcess();
+#endif
+
 namespace {
+
+#ifdef _WIN32
+// [IMPORTPROBE] SHADPS4_IMPORT_PROBE=1/2: measure the NVIDIA driver's real imported-host-memory
+// ceiling. Mirrors the live LABELUMA host-import path exactly (VirtualAlloc -> host-pointer props
+// -> ImportMemoryHostPointerInfoEXT + external-memory VkBuffer + bind). Fully env-gated; every
+// VkResult checked; no failure can abort init.
+constexpr unsigned long PROBE_MEM_COMMIT = 0x00001000;
+constexpr unsigned long PROBE_MEM_RESERVE = 0x00002000;
+constexpr unsigned long PROBE_MEM_RELEASE = 0x00008000;
+constexpr unsigned long PROBE_PAGE_READWRITE = 0x04;
+
+struct ProbeChunk {
+    void* host{};
+    u64 size{};
+    vk::Buffer buffer{};
+    vk::DeviceMemory memory{};
+};
+
+// Import one chunk of `size` bytes (aligned up to `align`). Returns true and fills `out` on
+// success; false with `err` set on any failure (all intermediate resources released).
+bool ProbeImportChunk(vk::PhysicalDevice pdev, vk::Device dev, u64 size, u64 align,
+                      ProbeChunk& out, vk::Result& err) {
+    const u64 asize = (size + align - 1) & ~(align - 1);
+    void* host =
+        VirtualAlloc(nullptr, asize, PROBE_MEM_RESERVE | PROBE_MEM_COMMIT, PROBE_PAGE_READWRITE);
+    if (host == nullptr) {
+        err = vk::Result::eErrorOutOfHostMemory;
+        return false;
+    }
+    const auto hp = dev.getMemoryHostPointerPropertiesEXT(
+        vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT, host);
+    if (hp.result != vk::Result::eSuccess || hp.value.memoryTypeBits == 0) {
+        err = hp.result;
+        VirtualFree(host, 0, PROBE_MEM_RELEASE);
+        return false;
+    }
+    const auto mem_props = pdev.getMemoryProperties();
+    u32 type_index = std::numeric_limits<u32>::max();
+    for (u32 i = 0; i < mem_props.memoryTypeCount; ++i) {
+        if (!(hp.value.memoryTypeBits & (1u << i))) {
+            continue;
+        }
+        const auto flags = mem_props.memoryTypes[i].propertyFlags;
+        if (flags & vk::MemoryPropertyFlagBits::eHostVisible &&
+            flags & vk::MemoryPropertyFlagBits::eHostCoherent) {
+            type_index = i;
+            break;
+        }
+        if (type_index == std::numeric_limits<u32>::max()) {
+            type_index = i;
+        }
+    }
+    const vk::StructureChain<vk::BufferCreateInfo, vk::ExternalMemoryBufferCreateInfo> buffer_ci{
+        vk::BufferCreateInfo{
+            .size = asize,
+            .usage = vk::BufferUsageFlagBits::eStorageBuffer |
+                     vk::BufferUsageFlagBits::eShaderDeviceAddress,
+            .sharingMode = vk::SharingMode::eExclusive,
+        },
+        vk::ExternalMemoryBufferCreateInfo{
+            .handleTypes = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+        },
+    };
+    auto buffer_res = dev.createBuffer(buffer_ci.get());
+    if (buffer_res.result != vk::Result::eSuccess) {
+        err = buffer_res.result;
+        VirtualFree(host, 0, PROBE_MEM_RELEASE);
+        return false;
+    }
+    const vk::StructureChain<vk::MemoryAllocateInfo, vk::ImportMemoryHostPointerInfoEXT,
+                             vk::MemoryAllocateFlagsInfo>
+        alloc_ci{
+            vk::MemoryAllocateInfo{
+                .allocationSize = asize,
+                .memoryTypeIndex = type_index,
+            },
+            vk::ImportMemoryHostPointerInfoEXT{
+                .handleType = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+                .pHostPointer = host,
+            },
+            vk::MemoryAllocateFlagsInfo{
+                .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
+            },
+        };
+    auto memory_res = dev.allocateMemory(alloc_ci.get());
+    if (memory_res.result != vk::Result::eSuccess) {
+        err = memory_res.result;
+        dev.destroyBuffer(buffer_res.value);
+        VirtualFree(host, 0, PROBE_MEM_RELEASE);
+        return false;
+    }
+    if (dev.bindBufferMemory(buffer_res.value, memory_res.value, 0) != vk::Result::eSuccess) {
+        err = vk::Result::eErrorMemoryMapFailed;
+        dev.destroyBuffer(buffer_res.value);
+        dev.freeMemory(memory_res.value);
+        VirtualFree(host, 0, PROBE_MEM_RELEASE);
+        return false;
+    }
+    out = ProbeChunk{host, asize, buffer_res.value, memory_res.value};
+    return true;
+}
+
+void ProbeFree(vk::Device dev, ProbeChunk& c) {
+    dev.destroyBuffer(c.buffer);
+    dev.freeMemory(c.memory);
+    VirtualFree(c.host, 0, PROBE_MEM_RELEASE);
+    c = ProbeChunk{};
+}
+
+void RunImportProbe(vk::PhysicalDevice pdev, vk::Device dev, u64 align, bool has_ext,
+                    bool has_budget, int mode, u64 cap_mb) {
+    constexpr u64 MB = 1ull << 20;
+    // Phase 0: memory budget per heap.
+    if (has_budget) {
+        vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+        vk::PhysicalDeviceMemoryProperties2 props2{.pNext = &budget};
+        pdev.getMemoryProperties2(&props2);
+        const auto& mp = props2.memoryProperties;
+        for (u32 i = 0; i < mp.memoryHeapCount; ++i) {
+            const bool dev_local =
+                static_cast<bool>(mp.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal);
+            LOG_CRITICAL(Render_Vulkan,
+                         "IMPORTPROBE: heap[{}] size={} MB budget={} MB usage={} MB device_local={}",
+                         i, mp.memoryHeaps[i].size / MB, budget.heapBudget[i] / MB,
+                         budget.heapUsage[i] / MB, dev_local ? 1 : 0);
+        }
+    } else {
+        LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: VK_EXT_memory_budget unsupported, skipping phase 0");
+    }
+    if (!has_ext || align == 0) {
+        LOG_CRITICAL(Render_Vulkan,
+                     "IMPORTPROBE: VK_EXT_external_memory_host unavailable (align={}), skipping",
+                     align);
+        if (mode == 2) {
+            LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: exiting (probe mode 2)");
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+        return;
+    }
+
+    std::vector<ProbeChunk> chunks;
+    u64 total = 0;
+    const u64 CAP = cap_mb * MB;
+    vk::Result err = vk::Result::eSuccess;
+
+    // Phase 1: coarse 16 MB steps until first failure (or cap).
+    while (total + 16 * MB <= CAP) {
+        ProbeChunk c{};
+        if (!ProbeImportChunk(pdev, dev, 16 * MB, align, c, err)) {
+            LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: COARSE ceiling={} MB err={}", total / MB,
+                         vk::to_string(err));
+            break;
+        }
+        chunks.push_back(c);
+        total += c.size;
+        LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: +16MB total={} MB", total / MB);
+    }
+    if (total >= CAP) {
+        LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: reached cap {} MB without failure", total / MB);
+    }
+
+    // Phase 2: refine the boundary with progressively smaller steps.
+    for (const u64 step : {4 * MB, 1 * MB, MB / 4}) {
+        while (true) {
+            ProbeChunk c{};
+            if (!ProbeImportChunk(pdev, dev, step, align, c, err)) {
+                break;
+            }
+            chunks.push_back(c);
+            total += c.size;
+        }
+    }
+    LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: CEILING precise={} KB ({:.2f} MB)", total / 1024,
+                 static_cast<double>(total) / static_cast<double>(MB));
+
+    // Phase 3: budget-recovery test - free half, then re-import 16 MB until failure.
+    u64 freed = 0;
+    const size_t half = chunks.size() / 2;
+    for (size_t i = 0; i < half; ++i) {
+        freed += chunks[i].size;
+        ProbeFree(dev, chunks[i]);
+    }
+    chunks.erase(chunks.begin(), chunks.begin() + half);
+    u64 reimported = 0;
+    while (true) {
+        ProbeChunk c{};
+        if (!ProbeImportChunk(pdev, dev, 16 * MB, align, c, err)) {
+            break;
+        }
+        chunks.push_back(c);
+        reimported += c.size;
+    }
+    LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: RECOVERY freed={} MB reimported={} MB", freed / MB,
+                 reimported / MB);
+
+    // Budget snapshot at peak (before freeing) - shows which heap the private import consumed.
+    if (has_budget) {
+        vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+        vk::PhysicalDeviceMemoryProperties2 props2{.pNext = &budget};
+        pdev.getMemoryProperties2(&props2);
+        const auto& mp = props2.memoryProperties;
+        for (u32 i = 0; i < mp.memoryHeapCount; ++i) {
+            LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: after heap[{}] budget={} MB usage={} MB", i,
+                         budget.heapBudget[i] / MB, budget.heapUsage[i] / MB);
+        }
+    }
+
+    // Phase 4: free everything probed.
+    for (auto& c : chunks) {
+        ProbeFree(dev, c);
+    }
+    chunks.clear();
+    LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: done, all freed");
+    if (mode == 2) {
+        LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: exiting (probe mode 2)");
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+}
+
+// ---- [GUESTPROBE] measure the pinning ceiling of GUEST memory (file-mapping section views) ----
+extern "C" __declspec(dllimport) size_t __stdcall VirtualQuery(const void*, void*, size_t);
+// x64 MEMORY_BASIC_INFORMATION layout (48 bytes), declared by hand (no windows.h).
+struct ProbeMbi {
+    void* BaseAddress;
+    void* AllocationBase;
+    unsigned long AllocationProtect;
+    unsigned long pad0;
+    size_t RegionSize;
+    unsigned long State;
+    unsigned long Protect;
+    unsigned long Type;
+    unsigned long pad1;
+};
+
+// Import an EXISTING host range [host, host+size) (guest memory). No VirtualAlloc/VirtualFree -
+// this is the live game's memory. Cleanup destroys only the VkBuffer/VkDeviceMemory.
+bool GuestImportChunk(vk::PhysicalDevice pdev, vk::Device dev, void* host, u64 size, u64 align,
+                      ProbeChunk& out, vk::Result& err, const char*& stage) {
+    const u64 asize = (size + align - 1) & ~(align - 1);
+    const auto hp = dev.getMemoryHostPointerPropertiesEXT(
+        vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT, host);
+    if (hp.result != vk::Result::eSuccess || hp.value.memoryTypeBits == 0) {
+        err = hp.result;
+        stage = "getprops";
+        return false;
+    }
+    const auto mem_props = pdev.getMemoryProperties();
+    u32 type_index = std::numeric_limits<u32>::max();
+    for (u32 i = 0; i < mem_props.memoryTypeCount; ++i) {
+        if (!(hp.value.memoryTypeBits & (1u << i))) {
+            continue;
+        }
+        const auto flags = mem_props.memoryTypes[i].propertyFlags;
+        if (flags & vk::MemoryPropertyFlagBits::eHostVisible &&
+            flags & vk::MemoryPropertyFlagBits::eHostCoherent) {
+            type_index = i;
+            break;
+        }
+        if (type_index == std::numeric_limits<u32>::max()) {
+            type_index = i;
+        }
+    }
+    const vk::StructureChain<vk::BufferCreateInfo, vk::ExternalMemoryBufferCreateInfo> buffer_ci{
+        vk::BufferCreateInfo{
+            .size = asize,
+            .usage = vk::BufferUsageFlagBits::eStorageBuffer |
+                     vk::BufferUsageFlagBits::eShaderDeviceAddress,
+            .sharingMode = vk::SharingMode::eExclusive,
+        },
+        vk::ExternalMemoryBufferCreateInfo{
+            .handleTypes = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+        },
+    };
+    auto buffer_res = dev.createBuffer(buffer_ci.get());
+    if (buffer_res.result != vk::Result::eSuccess) {
+        err = buffer_res.result;
+        stage = "buffer";
+        return false;
+    }
+    const vk::StructureChain<vk::MemoryAllocateInfo, vk::ImportMemoryHostPointerInfoEXT,
+                             vk::MemoryAllocateFlagsInfo>
+        alloc_ci{
+            vk::MemoryAllocateInfo{
+                .allocationSize = asize,
+                .memoryTypeIndex = type_index,
+            },
+            vk::ImportMemoryHostPointerInfoEXT{
+                .handleType = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+                .pHostPointer = host,
+            },
+            vk::MemoryAllocateFlagsInfo{
+                .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
+            },
+        };
+    auto memory_res = dev.allocateMemory(alloc_ci.get());
+    if (memory_res.result != vk::Result::eSuccess) {
+        err = memory_res.result;
+        stage = "alloc";
+        dev.destroyBuffer(buffer_res.value);
+        return false;
+    }
+    if (dev.bindBufferMemory(buffer_res.value, memory_res.value, 0) != vk::Result::eSuccess) {
+        err = vk::Result::eErrorMemoryMapFailed;
+        stage = "bind";
+        dev.destroyBuffer(buffer_res.value);
+        dev.freeMemory(memory_res.value);
+        return false;
+    }
+    out = ProbeChunk{host, asize, buffer_res.value, memory_res.value};
+    return true;
+}
+
+// Free a guest import: NEVER VirtualFree (live game memory) - only the Vulkan objects.
+void GuestFree(vk::Device dev, ProbeChunk& c) {
+    dev.destroyBuffer(c.buffer);
+    dev.freeMemory(c.memory);
+    c = ProbeChunk{};
+}
+
+void LogHeapBudget(vk::PhysicalDevice pdev, bool has_budget, const char* tag) {
+    constexpr u64 MB = 1ull << 20;
+    if (!has_budget) {
+        return;
+    }
+    vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    vk::PhysicalDeviceMemoryProperties2 props2{.pNext = &budget};
+    pdev.getMemoryProperties2(&props2);
+    const auto& mp = props2.memoryProperties;
+    for (u32 i = 0; i < mp.memoryHeapCount; ++i) {
+        const bool dev_local =
+            static_cast<bool>(mp.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal);
+        LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: {} heap[{}] size={} MB budget={} MB usage={} MB device_local={}",
+                     tag, i, mp.memoryHeaps[i].size / MB, budget.heapBudget[i] / MB,
+                     budget.heapUsage[i] / MB, dev_local ? 1 : 0);
+    }
+}
+
+void RunGuestProbe(vk::PhysicalDevice pdev, vk::Device dev, u64 align, bool has_ext,
+                   bool has_budget, int mode, u32 delay_s) {
+    constexpr u64 MB = 1ull << 20;
+    std::this_thread::sleep_for(std::chrono::seconds(delay_s));
+    if (!has_ext || align == 0) {
+        LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: external_memory_host unavailable (align={}), skip",
+                     align);
+        if (mode == 2) {
+            LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: exiting (probe mode guest2)");
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+        return;
+    }
+    LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: start, mapping importability (align={})", align);
+    LogHeapBudget(pdev, has_budget, "before");
+
+    // [v3 MAP] Collect committed regions with Type + Protect (not just address spans). This turns
+    // the probe into an importability MAP: which regions/types import and which refuse.
+    constexpr u64 kGuestLo = 0x1000000000ull;
+    constexpr u64 kGuestHi = 0x1400000000ull;
+    constexpr unsigned long MEM_PRIVATE = 0x20000;
+    constexpr unsigned long MEM_MAPPED = 0x40000;
+    constexpr unsigned long MEM_IMAGE = 0x1000000;
+    struct Region {
+        u64 base;
+        u64 end;
+        unsigned long type;
+        unsigned long protect;
+    };
+    std::vector<Region> regions;
+    u64 committed_bytes = 0, priv_mb = 0, mapped_mb = 0, image_mb = 0;
+    for (u64 addr = kGuestLo; addr < kGuestHi;) {
+        ProbeMbi mbi{};
+        const size_t got = VirtualQuery(reinterpret_cast<const void*>(addr), &mbi, sizeof(mbi));
+        if (got == 0 || mbi.RegionSize == 0) {
+            break;
+        }
+        const u64 region_end = std::min<u64>(addr + mbi.RegionSize, kGuestHi);
+        if (mbi.State == PROBE_MEM_COMMIT) {
+            regions.push_back({addr, region_end, mbi.Type, mbi.Protect});
+            const u64 mb = (region_end - addr) / MB;
+            committed_bytes += region_end - addr;
+            if (mbi.Type == MEM_PRIVATE) {
+                priv_mb += mb;
+            } else if (mbi.Type == MEM_MAPPED) {
+                mapped_mb += mb;
+            } else if (mbi.Type == MEM_IMAGE) {
+                image_mb += mb;
+            }
+        }
+        addr = region_end;
+    }
+    LOG_CRITICAL(Render_Vulkan,
+                 "GUESTPROBE: committed private={} MB mapped={} MB image={} MB regions={}", priv_mb,
+                 mapped_mb, image_mb, regions.size());
+
+    std::vector<ProbeChunk> chunks;
+    u64 imported = 0, failed_bytes = 0;
+    u64 priv_ok = 0, priv_fail = 0, mapped_ok = 0, mapped_fail = 0, image_ok = 0, image_fail = 0;
+    u32 fail_lines = 0;
+    bool first_fail_logged = false;
+
+    const auto type_name = [](unsigned long t) -> const char* {
+        return t == MEM_PRIVATE ? "private" : t == MEM_MAPPED ? "mapped"
+                                          : t == MEM_IMAGE     ? "image"
+                                                              : "other";
+    };
+
+    // [v3 SKIP-ON-FAIL] Walk each region; import in 16 MB pieces. On the FIRST failure inside a
+    // region, log it (capped) + FIRSTFAIL detail once, then SKIP the rest of THAT region and move
+    // to the next - so a bad region cannot mask whether later ones still import (quota vs nature).
+    for (const Region& r : regions) {
+        u64 region_imported = 0;
+        bool region_failed = false;
+        for (u64 cur = r.base; cur < r.end;) {
+            const u64 sz = std::min<u64>(16 * MB, r.end - cur);
+            ProbeChunk c{};
+            vk::Result err = vk::Result::eSuccess;
+            const char* stage = "?";
+            if (GuestImportChunk(pdev, dev, reinterpret_cast<void*>(cur), sz, align, c, err,
+                                 stage)) {
+                chunks.push_back(c);
+                imported += c.size;
+                region_imported += c.size;
+                cur += sz;
+                continue;
+            }
+            // Failure: record and skip the rest of this region.
+            region_failed = true;
+            failed_bytes += r.end - cur; // count the untried remainder of the region as failed
+            if (fail_lines < 64) {
+                ++fail_lines;
+                LOG_CRITICAL(Render_Vulkan,
+                             "GUESTPROBE: FAIL addr={:#x} size={:#x} err={} stage={} type={} "
+                             "protect={:#x}",
+                             cur, sz, vk::to_string(err), stage, type_name(r.type), r.protect);
+            }
+            if (!first_fail_logged) {
+                first_fail_logged = true;
+                LOG_CRITICAL(Render_Vulkan,
+                             "GUESTPROBE: FIRSTFAIL region base={:#x} size={} MB state=0x{:x} "
+                             "protect={:#x} type={:#x} ({})",
+                             r.base, (r.end - r.base) / MB, PROBE_MEM_COMMIT, r.protect, r.type,
+                             type_name(r.type));
+            }
+            break; // skip rest of this region
+        }
+        const u64 region_total = r.end - r.base;
+        const u64 region_fail = region_total - region_imported;
+        if (r.type == MEM_PRIVATE) {
+            priv_ok += region_imported;
+            priv_fail += region_fail;
+        } else if (r.type == MEM_MAPPED) {
+            mapped_ok += region_imported;
+            mapped_fail += region_fail;
+        } else if (r.type == MEM_IMAGE) {
+            image_ok += region_imported;
+            image_fail += region_fail;
+        }
+        (void)region_failed;
+    }
+
+    LOG_CRITICAL(Render_Vulkan,
+                 "GUESTPROBE: MAP imported={} MB failed={} MB | private ok={} MB fail={} MB | "
+                 "mapped ok={} MB fail={} MB | image ok={} MB fail={} MB",
+                 imported / MB, failed_bytes / MB, priv_ok / MB, priv_fail / MB, mapped_ok / MB,
+                 mapped_fail / MB, image_ok / MB, image_fail / MB);
+
+    LogHeapBudget(pdev, has_budget, "after");
+    u64 total = imported;
+    const size_t freed_chunks = chunks.size();
+    for (auto& c : chunks) {
+        GuestFree(dev, c);
+    }
+    chunks.clear();
+    LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: done, all freed (peak {} MB, {} chunks)", total / MB,
+                 freed_chunks);
+    if (mode == 2) {
+        LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: exiting (probe mode guest2)");
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+}
+#endif // _WIN32
 
 std::vector<vk::PhysicalDevice> EnumeratePhysicalDevices(vk::UniqueInstance& instance) {
     auto [devices_result, devices] = instance->enumeratePhysicalDevices();
@@ -101,6 +599,9 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
     if (enable_validation) {
         debug_callback = CreateDebugCallback(*instance);
     }
+    if (AddrBindEnabled()) {
+        addr_bind_messenger = CreateAddrBindMessenger(*instance);
+    }
     const std::size_t num_physical_devices = static_cast<u16>(physical_devices.size());
     ASSERT_MSG(num_physical_devices > 0, "No physical devices found");
     LOG_INFO(Render_Vulkan, "Found {} physical devices", num_physical_devices);
@@ -167,6 +668,7 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
     CollectPhysicalMemoryInfo();
     CollectImageFormatInfo();
     CollectToolingInfo();
+    Postmortem::MarkStartup("vk_instance");
 }
 
 Instance::~Instance() {
@@ -203,17 +705,22 @@ bool Instance::CreateDevice() {
                           vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
                           vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT,
                           vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR,
-                          vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT>();
+                          vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT,
+                          vk::PhysicalDeviceAddressBindingReportFeaturesEXT>();
     features = feature_chain.get().features;
 
     const vk::StructureChain properties_chain = physical_device.getProperties2<
         vk::PhysicalDeviceProperties2, vk::PhysicalDeviceVulkan11Properties,
         vk::PhysicalDeviceVulkan12Properties, vk::PhysicalDeviceVulkan13Properties,
-        vk::PhysicalDevicePushDescriptorPropertiesKHR>();
+        vk::PhysicalDevicePushDescriptorPropertiesKHR,
+        vk::PhysicalDeviceExternalMemoryHostPropertiesEXT>();
     vk11_props = properties_chain.get<vk::PhysicalDeviceVulkan11Properties>();
     vk12_props = properties_chain.get<vk::PhysicalDeviceVulkan12Properties>();
     vk13_props = properties_chain.get<vk::PhysicalDeviceVulkan13Properties>();
     push_descriptor_props = properties_chain.get<vk::PhysicalDevicePushDescriptorPropertiesKHR>();
+    min_imported_host_pointer_alignment =
+        properties_chain.get<vk::PhysicalDeviceExternalMemoryHostPropertiesEXT>()
+            .minImportedHostPointerAlignment;
     LOG_INFO(Render_Vulkan, "Physical device subgroup size {}", vk11_props.subgroupSize);
 
     if (available_extensions.empty()) {
@@ -274,6 +781,18 @@ bool Instance::CreateDevice() {
             feature_chain.get<vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT>();
         LOG_INFO(Render_Vulkan, "- extendedDynamicState3ColorWriteMask: {}",
                  dynamic_state_3_features.extendedDynamicState3ColorWriteMask);
+        // [PIPESTAT] Reported, NOT enabled. If the pipeline-switch census blames blend state,
+        // these are the features that could take it out of the key and collapse the permutation
+        // count. Logged at CRITICAL so it lands in the run log next to PIPESTAT.
+        LOG_CRITICAL(Render_Vulkan,
+                     "DYNSTATE3: colorWriteMask={} colorBlendEquation={} colorBlendEnable={} "
+                     "rasterizationSamples={} logicOpEnable={} colorWriteEnable(sep_ext)={}",
+                     bool(dynamic_state_3_features.extendedDynamicState3ColorWriteMask),
+                     bool(dynamic_state_3_features.extendedDynamicState3ColorBlendEquation),
+                     bool(dynamic_state_3_features.extendedDynamicState3ColorBlendEnable),
+                     bool(dynamic_state_3_features.extendedDynamicState3RasterizationSamples),
+                     bool(dynamic_state_3_features.extendedDynamicState3LogicOpEnable),
+                     bool(dynamic_state_3_features.extendedDynamicState3ColorWriteMask));
     }
     custom_border_color = add_extension(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     depth_clip_control = add_extension(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
@@ -336,6 +855,23 @@ bool Instance::CreateDevice() {
     }
     image_view_min_lod = add_extension(VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
     supports_memory_budget = add_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    external_memory_host = add_extension(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    nv_checkpoints = add_extension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+    device_fault = add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    // [R8 ADDRBIND] device-side extension for bind/unbind reporting; only when requested.
+    // The extension alone is not enough: the reportAddressBinding FEATURE must be queried from
+    // the physical device and enabled in the VkDeviceCreateInfo pNext chain, or the driver
+    // silently emits no events (observed in run R8: ext on, feature off, zero events).
+    const bool ab_ext =
+        AddrBindEnabled() && add_extension(VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
+    const bool ab_feature =
+        ab_ext && feature_chain.get<vk::PhysicalDeviceAddressBindingReportFeaturesEXT>()
+                          .reportAddressBinding == VK_TRUE;
+    address_binding_report = ab_ext && ab_feature;
+    if (AddrBindEnabled()) {
+        LOG_CRITICAL(Render_Vulkan, "ADDRBIND: requested, ext_supported={} feature_supported={}",
+                     ab_ext, ab_feature);
+    }
     const bool calibrated_timestamps =
         TRACY_GPU_ENABLED ? add_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) : false;
 
@@ -359,10 +895,29 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    static constexpr std::array queue_priorities = {1.0f};
+    // A second queue in the family isolates presentation: a wedged present
+    // chain (dozing compositor holding images) then cannot park the main
+    // graphics queue and with it the whole command processor.
+    // Queue 0 - graphics/CP, queue 1 - presentation (isolates a wedged present
+    // chain), queue 2 - readback downloads (isolates guest fault servicing from
+    // a busy parser; see BufferCache::ReadMemory).
+    // [TDR SPINRESCUE] Four priorities so a 4th (rescue) queue never reads past the array end
+    // (OOB caught by review). The extra element is harmless when only 3 queues are requested.
+    static constexpr std::array queue_priorities = {1.0f, 1.0f, 1.0f, 1.0f};
+    // The dedicated rescue queue (index 3) is only requested when the snoop+ contour is armed -
+    // otherwise the queue count is unchanged and behaviour is bit-identical.
+    static const bool spin_wants_rescue_queue = [] {
+        const char* e = std::getenv("SHADPS4_SPINRESCUE");
+        return e && (std::strcmp(e, "snoop") == 0 || std::strcmp(e, "import") == 0 ||
+                     std::strcmp(e, "1") == 0);
+    }();
+    const u32 family_queue_count = family_properties[queue_family_index].queueCount;
+    const u32 wanted_queues =
+        std::min<u32>(spin_wants_rescue_queue ? 4 : 3, family_queue_count);
+    separate_present_queue = wanted_queues >= 2;
     const vk::DeviceQueueCreateInfo queue_info = {
         .queueFamilyIndex = queue_family_index,
-        .queueCount = static_cast<u32>(queue_priorities.size()),
+        .queueCount = wanted_queues,
         .pQueuePriorities = queue_priorities.data(),
     };
 
@@ -503,8 +1058,20 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceImageViewMinLodFeaturesEXT{
             .minLod = true,
         },
+        vk::PhysicalDeviceFaultFeaturesEXT{
+            .deviceFault = true,
+        },
+        vk::PhysicalDeviceAddressBindingReportFeaturesEXT{
+            .reportAddressBinding = true,
+        },
     };
 
+    if (!device_fault) {
+        device_chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
+    }
+    if (!address_binding_report) {
+        device_chain.unlink<vk::PhysicalDeviceAddressBindingReportFeaturesEXT>();
+    }
     if (!custom_border_color) {
         device_chain.unlink<vk::PhysicalDeviceCustomBorderColorFeaturesEXT>();
     }
@@ -559,7 +1126,24 @@ bool Instance::CreateDevice() {
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
 
     graphics_queue = device->getQueue(queue_family_index, 0);
-    present_queue = device->getQueue(queue_family_index, 0);
+    present_queue = device->getQueue(queue_family_index, separate_present_queue ? 1 : 0);
+    if (wanted_queues >= 3) {
+        readback_queue = device->getQueue(queue_family_index, 2);
+    }
+    // [TDR SPINRESCUE] Dedicated rescue queue at index 3. Never degrade onto queue 2: at a stall
+    // everything behind the TSFF batch's timeline-wait is serialized and would never run.
+    if (spin_wants_rescue_queue && wanted_queues >= 4) {
+        rescue_queue = device->getQueue(queue_family_index, 3);
+    } else if (spin_wants_rescue_queue) {
+        LOG_CRITICAL(Render_Vulkan,
+                     "SPINRESCUE: family has only {} queues (<4), rescue contour disabled",
+                     family_queue_count);
+    }
+    LOG_CRITICAL(Render_Vulkan, "QUEUES: family {} count {} wanted {} readback {} rescue {}",
+                 queue_family_index, family_queue_count, wanted_queues,
+                 static_cast<bool>(readback_queue), static_cast<bool>(rescue_queue));
+    LOG_INFO(Render_Vulkan, "Present queue: {}",
+             separate_present_queue ? "separate (index 1)" : "shared with graphics");
 
     if (calibrated_timestamps) {
         const auto [time_domains_result, time_domains] =
@@ -591,6 +1175,74 @@ bool Instance::CreateDevice() {
                         vk::to_string(time_domains_result));
         }
     }
+
+    // [IMPORTPROBE] SHADPS4_IMPORT_PROBE: measure the raw imported-host-memory ceiling right after
+    // device creation, BEFORE any LABELUMA seeds are imported (so the measurement starts from zero).
+    // Env-gated: absent -> no effect on the live path. 1 = probe and continue, 2 = probe and exit.
+#ifdef _WIN32
+    if (const char* pe = std::getenv("SHADPS4_IMPORT_PROBE")) {
+        // Private-probe delay + phase-1 cap knobs (guest branch keeps its own default-30 delay).
+        u32 priv_delay_s = 0;
+        if (const char* ds = std::getenv("SHADPS4_IMPORT_PROBE_DELAY_S")) {
+            priv_delay_s = static_cast<u32>(std::strtoul(ds, nullptr, 10));
+        }
+        u64 cap_mb = 2048;
+        if (const char* cm = std::getenv("SHADPS4_IMPORT_PROBE_CAP_MB")) {
+            const u64 v = std::strtoull(cm, nullptr, 10);
+            if (v != 0) {
+                cap_mb = v;
+            }
+        }
+        if (pe[0] == '1' || pe[0] == '2') {
+            const int probe_mode = pe[0] == '2' ? 2 : 1;
+            const vk::PhysicalDevice pdev = physical_device;
+            const vk::Device dev = *device;
+            const u64 align = min_imported_host_pointer_alignment;
+            const bool has_ext = external_memory_host;
+            const bool has_budget = supports_memory_budget;
+            if (priv_delay_s == 0) {
+                // Original behaviour: inline, right after device creation, before any seeds.
+                LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: start (mode {}), align={} cap={} MB",
+                             probe_mode, align, cap_mb);
+                RunImportProbe(pdev, dev, align, has_ext, has_budget, probe_mode, cap_mb);
+            } else {
+                // Deferred private probe (control experiment): run under the live game like the
+                // guest probe, so we can tell a section-view/BAR limit from a runtime-pressure one.
+                const u32 d = priv_delay_s;
+                LOG_CRITICAL(Render_Vulkan,
+                             "IMPORTPROBE: scheduled (mode {}), delay {}s, align={} cap={} MB",
+                             probe_mode, d, align, cap_mb);
+                import_probe_thread = std::jthread([pdev, dev, align, has_ext, has_budget, probe_mode,
+                                                    d, cap_mb](std::stop_token) {
+                    std::this_thread::sleep_for(std::chrono::seconds(d));
+                    LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: start (deferred, mode {})", probe_mode);
+                    RunImportProbe(pdev, dev, align, has_ext, has_budget, probe_mode, cap_mb);
+                });
+            }
+        } else if (std::strcmp(pe, "guest") == 0 || std::strcmp(pe, "guest2") == 0) {
+            // [GUESTPROBE] Guest memory (file-mapping section views) may have its own pinning
+            // quota. Run on a background thread after a delay so the game has committed its
+            // guest RAM. Thread stored on Instance so it outlives CreateDevice.
+            const int probe_mode = std::strcmp(pe, "guest2") == 0 ? 2 : 1;
+            u32 delay_s = 30;
+            if (const char* ds = std::getenv("SHADPS4_IMPORT_PROBE_DELAY_S")) {
+                const u32 v = static_cast<u32>(std::strtoul(ds, nullptr, 10));
+                delay_s = v; // 0 is allowed (immediate)
+            }
+            const vk::PhysicalDevice pdev = physical_device;
+            const vk::Device dev = *device;
+            const u64 align = min_imported_host_pointer_alignment;
+            const bool has_ext = external_memory_host;
+            const bool has_budget = supports_memory_budget;
+            LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: scheduled (mode {}), delay {}s, align={}",
+                         probe_mode, delay_s, align);
+            import_probe_thread = std::jthread([pdev, dev, align, has_ext, has_budget, probe_mode,
+                                                delay_s](std::stop_token) {
+                RunGuestProbe(pdev, dev, align, has_ext, has_budget, probe_mode, delay_s);
+            });
+        }
+    }
+#endif
 
     CreateAllocator();
     return true;

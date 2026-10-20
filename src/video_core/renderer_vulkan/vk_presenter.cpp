@@ -18,6 +18,7 @@
 #include "imgui/shadnet_notifications_layer.h"
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
+#include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -26,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -46,7 +48,136 @@
 #include <png.h>
 #include <vk_mem_alloc.h>
 
+namespace VideoCore::FreeImgRing {
+void Dump(u64 want_handle);
+}
+namespace Vulkan::AddrBind {
+struct CoverInfo {
+    u64 base;
+    u64 size;
+    bool found;
+};
+CoverInfo DumpCovering(u64 addr);
+}
+namespace Vulkan::BindLog {
+void Dump(); // vk_rasterizer.cpp
+}
+namespace VideoCore::FindLog {
+void Dump(); // texture_cache.cpp
+}
 namespace Vulkan {
+
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall TerminateProcess(void*, unsigned int);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentProcess();
+#endif
+static void FastDieNow() {
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), 0xDEAD);
+#else
+    _Exit(0xDD);
+#endif
+}
+
+// Определён в vk_rasterizer.cpp: хвост кольца последних диспатчей.
+void DumpRecentDispatches();
+
+// Последние достигнутые GPU чекпоинты (переживают device lost) — маркеры
+// называют команду, на которой встал GPU: диспатч (хэш cs) или дро
+// (бит 63 + хэш fs).
+static void DumpNvCheckpointsImpl(const Instance& instance) {
+    if (!instance.HasNvCheckpoints()) {
+        return;
+    }
+    const auto checkpoints = instance.GetGraphicsQueue().getCheckpointDataNV();
+    for (const auto& cp : checkpoints) {
+        LOG_CRITICAL(Render_Vulkan, "CHECKPOINT: stage={} marker={:#x}",
+                     vk::to_string(cp.stage), reinterpret_cast<u64>(cp.pCheckpointMarker));
+    }
+}
+
+// VK_EXT_device_fault: после device lost драйвер отдаёт точные адреса и
+// типы GPU-сбоя — главный ключ к кататонии на старте катсцены.
+// [LISTCOUNT] Defined in vk_rasterizer.cpp; no header change for a diagnostic.
+void DumpListCountRing();
+
+void DumpDeviceFaultImpl(const Instance& instance) {
+    if (!instance.HasDeviceFault()) {
+        return;
+    }
+    // [R8] In R6sense3 this printed interleaved from two threads (PresentThread +
+    // GpuCommandProcessor). Once-guard AFTER the fault check so a fault-less early call can
+    // never consume the single dump slot.
+    static std::atomic<bool> dumped{false};
+    if (dumped.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    const auto device = instance.GetDevice();
+    vk::DeviceFaultCountsEXT counts{};
+    if (device.getFaultInfoEXT(&counts, nullptr) != vk::Result::eSuccess &&
+        counts.addressInfoCount == 0 && counts.vendorInfoCount == 0) {
+        LOG_CRITICAL(Render_Vulkan, "DEVFAULT: no fault info available");
+        return;
+    }
+    std::vector<vk::DeviceFaultAddressInfoEXT> addrs(counts.addressInfoCount);
+    std::vector<vk::DeviceFaultVendorInfoEXT> vendors(counts.vendorInfoCount);
+    counts.vendorBinarySize = 0;
+    vk::DeviceFaultInfoEXT info{};
+    info.pAddressInfos = addrs.data();
+    info.pVendorInfos = vendors.data();
+    (void)device.getFaultInfoEXT(&counts, &info);
+    LOG_CRITICAL(Render_Vulkan, "DEVFAULT: '{}' addresses={} vendor={}", info.description.data(),
+                 counts.addressInfoCount, counts.vendorInfoCount);
+    // [LISTCOUNT] The last sampled loop counts of the shader the TDR names (vk_rasterizer.cpp).
+    DumpListCountRing();
+    // [R8 ADDRBIND] Attribution FIRST: an externally closed frozen window killed one
+    // catch mid-way through a 200-entry address list, losing the whole ring dump.
+    // The payload prints before the enumeration, and the enumeration is capped -
+    // the addresses cluster in one heap anyway.
+    Vulkan::AddrBind::DumpRing();
+    const u32 addr_cap = std::min<u32>(counts.addressInfoCount, 8);
+    for (u32 i = 0; i < addr_cap; ++i) {
+        LOG_CRITICAL(Render_Vulkan, "DEVFAULT addr[{}]: type={} addr={:#x} precision={:#x}", i,
+                     vk::to_string(addrs[i].addressType), addrs[i].reportedAddress,
+                     addrs[i].addressPrecision);
+        LOG_CRITICAL(Render_Vulkan, "DEVFAULT owner[{}]:{}", i,
+                     VideoCore::BufferCache::DescribeHostAddress(addrs[i].reportedAddress));
+        // [ATTRIB] which driver allocation(s) covered this device address, and when - and which
+        // guest pages' page-table entries still point into that dead object.
+        const auto cover = Vulkan::AddrBind::DumpCovering(addrs[i].reportedAddress);
+        if (cover.found) {
+            LOG_CRITICAL(Render_Vulkan, "DEVFAULT range[{}] {:#x}+{:#x}: {}", i, cover.base,
+                         cover.size, VideoCore::BufferCache::DescribeHostRange(cover.base, cover.size));
+        }
+    }
+    // [FREEIMG-RING] the last image deletions: match the unbound VkImage handle above by eye.
+    VideoCore::FreeImgRing::Dump(0);
+    // [BINDLOG] what the watched shaders were actually given (VkImage/view, slot, tick).
+    Vulkan::BindLog::Dump();
+    // [FINDLOG] how the texture cache resolved those T#s (requested vs handed out, view mip).
+    VideoCore::FindLog::Dump();
+    if (counts.addressInfoCount > addr_cap) {
+        LOG_CRITICAL(Render_Vulkan, "DEVFAULT: ... {} more addresses omitted",
+                     counts.addressInfoCount - addr_cap);
+    }
+    for (u32 i = 0; i < counts.vendorInfoCount; ++i) {
+        LOG_CRITICAL(Render_Vulkan, "DEVFAULT vendor[{}]: '{}' code={:#x} data={:#x}", i,
+                     vendors[i].description.data(), vendors[i].vendorFaultCode,
+                     vendors[i].vendorFaultData);
+    }
+    // [FASTDIE] SHADPS4_FASTDIE=1: die right after the dump. Three device-lost
+    // teardowns tonight wedged in the kernel (unkillable zombie, blocked the run
+    // loop, twice dragged the whole desktop down to a hard reboot). Everything
+    // worth saving is already in the sync log at this point.
+    static const bool fast_die = [] {
+        const char* e = std::getenv("SHADPS4_FASTDIE");
+        return e && e[0] == '1';
+    }();
+    if (fast_die) {
+        LOG_CRITICAL(Render_Vulkan, "FASTDIE: terminating after device-fault dump");
+        Vulkan::FastDieNow();
+    }
+}
 
 bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format format) {
     const vk::FormatProperties props{physical_device.getFormatProperties(format)};
@@ -497,7 +628,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     : window{window_}, liverpool{liverpool_},
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
                EmulatorSettings.IsVkCrashDiagnosticEnabled()},
-      draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
+      draw_scheduler{instance}, present_scheduler{instance, /*use_present_queue=*/true},
+      flip_scheduler{instance, /*use_present_queue=*/true},
       swapchain{instance, window},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
@@ -638,6 +770,10 @@ Frame* Presenter::PrepareLastFrame() {
         if (result == vk::Result::eTimeout) {
             continue;
         }
+        if (result == vk::Result::eErrorDeviceLost) {
+            DumpNvCheckpointsImpl(instance);
+            DumpDeviceFaultImpl(instance);
+        }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
                    "Device lost during waiting for a frame");
     }
@@ -698,9 +834,51 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                                VAddr cpu_address) {
     auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
     const auto image_id = texture_cache.FindImage(desc);
+    // The final tonemap of GPU-job engines (ND) writes the flip buffer as a
+    // raw SSBO: the fresh pixels live in the buffer cache, not in the image.
+    // Pull them across before presenting or the screen shows stale black.
+    texture_cache.MarkGpuDirtyIfBufferModified(image_id);
     texture_cache.UpdateImage(image_id);
 
+    // [debug] автозахват живого чёрного геймплея: каждые SHADPS4_AUTOSHOT_EVERY
+    // кадров DF-группы (0x1127xxxxxxx), максимум 12 штук — последний файл
+    // перед смертью процесса и есть кадр черноты.
+    if (VideoCore::IsRenderDocLoaded() && cpu_address >= 0x1127000000ULL &&
+        cpu_address < 0x1128000000ULL) {
+        static const u32 s_shot_every = [] {
+            const char* e = std::getenv("SHADPS4_AUTOSHOT_EVERY");
+            return e ? static_cast<u32>(std::atoi(e)) : 0u;
+        }();
+        static u32 s_df_frames = 0;
+        ++s_df_frames;
+        if (s_shot_every != 0 && s_df_frames % s_shot_every == 0 &&
+            s_df_frames / s_shot_every <= 24) {
+            LOG_CRITICAL(Render_Vulkan, "AUTOCAPTURE: RenderDoc shot at DF frame {}",
+                         s_df_frames);
+            VideoCore::TriggerCapture();
+        }
+    }
+
+    {
+        // [debug] последняя миля показа: какой image реально уходит на экран
+        // и получал ли он GPU-записи (алиас-расхождение = чёрный мир).
+        static const bool s_flog = std::getenv("SHADPS4_STUCKLOG") != nullptr;
+        static u32 s_cnt = 0;
+        if (s_flog && (++s_cnt % 60) == 0) {
+            auto& img = texture_cache.GetImage(image_id);
+            LOG_WARNING(Render_Vulkan,
+                        "PRESIMG: addr={:#x} id={} fmt={} {}x{} gpu_mod={}",
+                        cpu_address, image_id.index,
+                        vk::to_string(img.info.pixel_format), img.info.size.width,
+                        img.info.size.height,
+                        True(img.flags & VideoCore::ImageFlagBits::GpuModified));
+        }
+    }
+
     Frame* frame = GetRenderFrame();
+    if (frame == nullptr) {
+        return nullptr;
+    }
 
     const auto frame_subresources = vk::ImageSubresourceRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -738,7 +916,33 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     const vk::Extent2D image_size = {image.info.size.width, image.info.size.height};
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
-    const u32 capture_game_only_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
+    // [debug] SHADPS4_BURST=<start>,<count>,<every>: save <count> frames in a row (one every
+    // <every> presents) starting at present number <start>. Counter-based hunting for the
+    // texture flicker has produced two dead ends; the only honest way left is to look at
+    // consecutive frames and see what actually disappears between them.
+    u32 burst_extra = 0;
+    {
+        static const std::array<u32, 3> burst = [] {
+            std::array<u32, 3> v{0, 0, 1};
+            if (const char* e = std::getenv("SHADPS4_BURST")) {
+                std::sscanf(e, "%u,%u,%u", &v[0], &v[1], &v[2]);
+                if (v[2] == 0) {
+                    v[2] = 1;
+                }
+            }
+            return v;
+        }();
+        static u32 presents = 0;
+        static u32 taken = 0;
+        ++presents;
+        if (burst[1] != 0 && presents >= burst[0] && taken < burst[1] &&
+            (presents - burst[0]) % burst[2] == 0) {
+            ++taken;
+            burst_extra = 1;
+        }
+    }
+    const u32 capture_game_only_count =
+        VideoCore::ConsumeGameOnlyScreenshotRequests() + burst_extra;
     std::vector<ScreenshotReadback> pending_screenshots;
     if (capture_game_only_count > 0) {
         pending_screenshots.reserve(1);
@@ -787,6 +991,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     // Request a free presentation frame.
     Frame* frame = GetRenderFrame();
+    if (frame == nullptr) {
+        return nullptr;
+    }
 
     auto& scheduler = present_thread ? present_scheduler : draw_scheduler;
     scheduler.EndRendering();
@@ -1093,6 +1300,20 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
+    // [debug] счётчик кадров: одна строка раз в 5 секунд, дёшево и всегда видно.
+    {
+        static u64 s_frames = 0;
+        static auto s_t0 = std::chrono::steady_clock::now();
+        ++s_frames;
+        const auto now = std::chrono::steady_clock::now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_t0).count();
+        if (ms >= 5000) {
+            LOG_CRITICAL(Render_Vulkan, "FPS: {:.1f} ({} frames / {} ms)",
+                         s_frames * 1000.0 / double(ms), s_frames, ms);
+            s_frames = 0;
+            s_t0 = now;
+        }
+    }
     scheduler.Flush(info);
 
     // Present to swapchain.
@@ -1126,16 +1347,74 @@ Frame* Presenter::GetRenderFrame() {
     vk::Result result{};
 
     const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, std::numeric_limits<u64>::max());
+        // Bounded chunks purely for heartbeat logging; the wait itself is
+        // honest. The GPU-side job spin that used to wedge this fence for
+        // minutes is gone (unbounded V# reads are live now), and fabricating
+        // a flip without a presented image is poison: the guest outruns real
+        // frame retirement, wraps its render-frame ring and trips the
+        // m_gfxEopTick assert in FrameBegin during chapter loads.
+        result = device.waitForFences(frame->present_done, false, 100'000'000ULL);
         return result;
     };
 
     // Wait for the presentation to be finished so all frame resources are free
+    u32 timeouts = 0;
     while (wait() != vk::Result::eSuccess) {
+        if (result == vk::Result::eErrorDeviceLost) {
+            DumpNvCheckpointsImpl(instance);
+            DumpDeviceFaultImpl(instance);
+        }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
                    "Device lost during waiting for a frame");
         // Retry if the waiting times out
         if (result == vk::Result::eTimeout) {
+            if (++timeouts % 30 == 0) {
+                LOG_WARNING(Render_Vulkan, "Present fence still busy after {} s",
+                            timeouts / 10);
+            }
+            if (timeouts == 300) {
+                // 30 s of a wedged fence: dump the dispatch tail so the log
+                // names the shader the GPU received last (spin candidate).
+                DumpRecentDispatches();
+            }
+            if (timeouts == 450) {
+                // Queue-drain probe: an empty submit's fence signals once all
+                // PRIOR submissions on that queue finished. Tells catatonic
+                // device apart from individual stuck submits.
+                const auto dev = instance.GetDevice();
+                for (int qi = 0; qi < 2; ++qi) {
+                    const auto q =
+                        qi == 0 ? instance.GetGraphicsQueue() : instance.GetPresentQueue();
+                    auto probe = dev.createFence({}).value;
+                    {
+                        std::scoped_lock lk{Scheduler::submit_mutex};
+                        (void)q.submit({}, probe);
+                    }
+                    const auto pr = dev.waitForFences(probe, true, 2'000'000'000ULL);
+                    LOG_CRITICAL(Render_Vulkan, "DEVPROBE q{}: {}", qi,
+                                 pr == vk::Result::eSuccess ? "DRAINED"
+                                                            : vk::to_string(pr));
+                    if (pr == vk::Result::eSuccess) {
+                        dev.destroyFence(probe);
+                    }
+                }
+            }
+            if (timeouts == 600 || timeouts == 900) {
+                // Two checkpoint snapshots 30 s apart: identical markers mean
+                // a hung dispatch, advancing markers mean the GPU is merely
+                // crawling (perf collapse, not a deadlock).
+                DumpNvCheckpointsImpl(instance);
+                LOG_CRITICAL(Render_Vulkan,
+                             "PRESENTCHAIN: acquires={} presents={} present_tick={}/{} "
+                             "draw_tick={}/{} flip_tick={}/{}",
+                             swapchain.dbg_acquires.load(), swapchain.dbg_presents.load(),
+                             present_scheduler.GetMasterSemaphore()->KnownGpuTick(),
+                             present_scheduler.CurrentTick(),
+                             draw_scheduler.GetMasterSemaphore()->KnownGpuTick(),
+                             draw_scheduler.CurrentTick(),
+                             flip_scheduler.GetMasterSemaphore()->KnownGpuTick(),
+                             flip_scheduler.CurrentTick());
+            }
             continue;
         }
     }

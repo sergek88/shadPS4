@@ -149,6 +149,15 @@ void Linker::Execute(const std::vector<std::string>& args) {
     main_thread.Run([this, module, &args, has_libcinternal](std::stop_token) {
         Common::SetCurrentThreadName("Game:Main");
         std::set_terminate(Common::Log::Terminate);
+#ifdef _WIN32
+        {
+            // Same dispatch headroom guest pthreads get in RunThread: a guest
+            // fault near stack exhaustion otherwise kills the process silently
+            // before any handler can run. The main guest thread faults too.
+            ULONG guarantee = 128 * 1024;
+            SetThreadStackGuarantee(&guarantee);
+        }
+#endif
 
 #ifndef _WIN32 // Clear any existing signal mask for game threads.
         sigset_t emptyset;

@@ -139,6 +139,10 @@ public:
 
     // SOPP
     void S_BARRIER();
+    // [WAITFENCE] s_waitcnt vmcnt(0) after vector-memory stores = "stores are complete" on GCN;
+    // emit a device-scope release fence there (SHADPS4_WAITCNT_FENCE=1) so other agents (CPU,
+    // other dispatches) observe the stores in program order. Off by default.
+    void S_WAITCNT(const GcnInst& inst);
     void S_SENDMSG(const GcnInst& inst);
 
     // Scalar Memory
@@ -383,6 +387,7 @@ private:
 private:
     IR::IREmitter ir;
     Info& info;
+    bool vm_store_pending{false}; // [WAITFENCE] a buffer/image store since the last vmcnt(0)
     const RuntimeInfo& runtime_info;
     const Profile& profile;
     u32 next_vgpr_num;

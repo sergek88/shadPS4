@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -90,11 +91,24 @@ public:
     /// Marks an image as dirty if it exists at the provided address.
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
 
+    /// Помечает image GpuDirty, если буферный кэш держит свежие GPU-записи
+    /// его диапазона (компьют-тонемап пишет флип-буфер как SSBO — без этого
+    /// презентер показывает устаревшую картинку: «чёрный мир»).
+    void MarkGpuDirtyIfBufferModified(ImageId image_id);
+
     /// Evicts any images that overlap the unmapped range.
     void UnmapMemory(VAddr cpu_addr, size_t size);
 
     /// Schedules a copy of pending images for download back to CPU memory.
     void ProcessDownloadImages();
+
+    /// [R9 RINGPOOL] SHADPS4_RINGPOOL=1 (and requires DLIMG_BATCH=1). Default-off.
+    static bool RingPoolEnabled();
+    /// [R10] SHADPS4_RINGPOOL_DEPTH=1: depth-half adoption in the equal-address recreate of
+    /// ResolveDepthOverlap. Active only together with RINGPOOL. Default-off.
+    static bool RingPoolDepthEnabled();
+    /// Adopts a freshly-created ring image into the pool (called under `mutex` from FindImage).
+    void AdoptIntoRingPool(ImageId image_id);
 
     /// Retrieves the image handle of the image with the provided attributes.
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);
@@ -110,6 +124,12 @@ public:
 
     /// Retrieves the depth target with specified properties
     [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
+
+    /// [D1 RINGMIG_DL] Single stamping helper for every GpuModified setter (five sites incl.
+    /// Image::Resolve and vk_rasterizer). Stamps modified_tick so the tick-versioned ring
+    /// migration can tell a clean image (already downloaded) from a dirty one. Public: called
+    /// from vk_rasterizer. Defined in the .cpp - Scheduler is only forward-declared here.
+    void SetGpuModified(Image& image);
 
     /// Updates image contents if it was modified by CPU.
     void UpdateImage(ImageId image_id) {
@@ -307,6 +327,26 @@ private:
         DeleteImage(image_id);
     }
 
+public:
+    // [debug] тег журнала биндингов: пока != 0, FindImage логирует каждый
+    // возвращённый image (ставится растеризатором на подозреваемом дро).
+    /// True when an image occupies the page holding this address. The read-fault handler needs
+    /// it: a page can be tracked by the texture cache with no buffer behind it, and refusing to
+    /// handle such a fault would turn a legitimate readback into a crash.
+    [[nodiscard]] bool HasImageAt(VAddr addr) {
+        bool found = false;
+        std::scoped_lock lock{mutex};
+        ForEachImageInRegion(addr, 1, [&](ImageId, Image&) { found = true; });
+        return found;
+    }
+
+    void SetBindLogTag(u64 tag) {
+        bind_log_tag.store(tag, std::memory_order_relaxed);
+    }
+    std::atomic<u64> bind_log_tag{0};
+
+private:
+
     void GarbageCollectImages();
     void GarbageCollectSamplers();
 
@@ -322,6 +362,10 @@ private:
     Common::SlotVector<ImageView> slot_image_views;
     tsl::robin_map<u64, Sampler> samplers;
     std::unordered_set<ImageId> download_images;
+    // [R9 RINGPOOL] members of the video-ring image pool; every mutation is under `mutex`.
+    // Pool signature is fixed: 960x540, guest_size=0x240000, levels==1, layers==1.
+    boost::container::small_vector<ImageId, 16> ring_pool;
+    static constexpr size_t kRingPoolCap = 12; // >= number of unique ring addresses; tune later
     u64 total_used_memory = 0;
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
@@ -338,6 +382,18 @@ private:
     std::mutex mutex;
     std::mutex samplers_mutex;
     std::mutex download_images_mutex;
+    // [DLIMG-ASYNC] SHADPS4_DLIMG_ASYNC=1: dedicated staging buffers for the batched image
+    // downloads. The copies go into the current submission and the guest writeback is deferred
+    // to the tick's retirement (Scheduler::DeferOperation) instead of a Finish on the parser
+    // thread (FRAMECHAIN 06.09: dlimg = 22.5 ms of every frame). A slot stays busy until its
+    // deferred writeback ran; with no free slot the batch falls back to the synchronous path.
+    struct DlimgSlot {
+        std::unique_ptr<Buffer> buf;
+    };
+    std::vector<DlimgSlot> dlimg_pool;
+    // Bit i set = slot i holds an in-flight batch. A mask (not a bool per slot) because the
+    // [EOPRETIRE] writeback releases the slot from the priority-ops thread.
+    std::atomic<u32> dlimg_busy_mask{0};
     struct MetaDataInfo {
         enum class Type {
             CMask,

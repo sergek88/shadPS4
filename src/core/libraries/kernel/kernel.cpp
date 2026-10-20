@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <thread>
+#include "common/postmortem.h"
 #include <boost/asio/io_context.hpp>
 
 #include "common/assert.h"
@@ -153,6 +154,15 @@ s32 NativeToPosixErrno(s32 const e) {
 }
 
 void SetPosixErrno(s32 e) {
+    // [RETWATCH] The single funnel every failing HLE call goes through before returning -1.
+    // The caller is identified by its return address rather than by name: that costs one
+    // builtin and names the exact call site after symbolisation, without touching a hundred
+    // functions. Recorded only when SHADPS4_RETWATCH=1.
+    if (Postmortem::RetWatchEnabled()) {
+        Postmortem::NoteRetRaw("errno@caller", e,
+                               reinterpret_cast<u64>(__builtin_return_address(0)),
+                               static_cast<u64>(e));
+    }
     g_posix_errno = NativeToPosixErrno(e);
 }
 

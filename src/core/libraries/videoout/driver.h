@@ -4,6 +4,7 @@
 #pragma once
 
 #include "common/debug.h"
+#include "common/postmortem.h"
 #include "common/polyfill_thread.h"
 #include "core/libraries/videoout/video_out.h"
 
@@ -51,6 +52,7 @@ struct VideoOutPort {
     }
 
     void WaitVoLabel(auto&& pred) {
+        Postmortem::GuestWaitScope wait_scope{"WaitVoLabel"};
         std::unique_lock lk{vo_mutex};
         vo_cv.wait(lk, pred);
     }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <condition_variable>
+#include "common/postmortem.h"
 #include <mutex>
 #include <stop_token>
 #include <unordered_map>
@@ -128,6 +129,8 @@ s32 PS4_SYSV_ABI sceZlibWaitForDone(u64* request_id, const u32* timeout) {
     {
         // Pop from the done queue, unless the timeout is reached.
         std::unique_lock lock(mutex);
+        Postmortem::GuestWaitScope wait_scope{"sceZlibWaitForDone",
+                                              timeout ? static_cast<u64>(*timeout) : 0};
         const auto pred = [] { return !done_queue.empty(); };
         if (timeout) {
             if (!done_queue_cv.wait_for(lock, std::chrono::milliseconds(*timeout), pred)) {

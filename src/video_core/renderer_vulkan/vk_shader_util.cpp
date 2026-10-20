@@ -159,8 +159,11 @@ bool InitializeCompiler() {
 }
 } // Anonymous namespace
 
-vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, vk::Device device,
-                         std::vector<std::string> defines) {
+// [CSBATCH] The SPIR-V target is a parameter: every host shader keeps 1.3 (Compile below), the
+// skin-batch kernel retries with 1.5 when GL_EXT_buffer_reference is refused under 1.3.
+static vk::ShaderModule CompileImpl(std::string_view code, vk::ShaderStageFlagBits stage,
+                                    vk::Device device, std::vector<std::string> defines,
+                                    glslang::EShTargetLanguageVersion spv_target) {
     if (!InitializeCompiler()) {
         return {};
     }
@@ -175,8 +178,7 @@ vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, v
     int pass_source_code_length = static_cast<int>(code.size());
 
     auto shader = std::make_unique<glslang::TShader>(lang);
-    shader->setEnvTarget(glslang::EShTargetSpv,
-                         glslang::EShTargetLanguageVersion::EShTargetSpv_1_3);
+    shader->setEnvTarget(glslang::EShTargetSpv, spv_target);
     shader->setStringsWithLengths(&pass_source_code, &pass_source_code_length, 1);
 
     std::string preambleString;
@@ -202,23 +204,23 @@ vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, v
     std::string preprocessedStr;
     if (!shader->preprocess(&DefaultTBuiltInResource, default_version, profile, false, true,
                             messages, &preprocessedStr, includer)) [[unlikely]] {
-        LOG_ERROR(Render_Vulkan,
+        LOG_CRITICAL(Render_Vulkan,
                   "Shader preprocess error\n"
                   "Shader Info Log:\n"
                   "{}\n{}",
                   shader->getInfoLog(), shader->getInfoDebugLog());
-        LOG_ERROR(Render_Vulkan, "Shader Source:\n{}", code);
+        LOG_CRITICAL(Render_Vulkan, "Shader Source:\n{}", code);
         return {};
     }
 
     if (!shader->parse(&DefaultTBuiltInResource, default_version, profile, false, true, messages,
                        includer)) [[unlikely]] {
-        LOG_ERROR(Render_Vulkan,
+        LOG_CRITICAL(Render_Vulkan,
                   "Shader parse error\n"
                   "Shader Info Log:\n"
                   "{}\n{}",
                   shader->getInfoLog(), shader->getInfoDebugLog());
-        LOG_ERROR(Render_Vulkan, "Shader Source:\n{}", code);
+        LOG_CRITICAL(Render_Vulkan, "Shader Source:\n{}", code);
         return {};
     }
 
@@ -226,7 +228,7 @@ vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, v
     auto program = std::make_unique<glslang::TProgram>();
     program->addShader(shader.get());
     if (!program->link(messages)) {
-        LOG_ERROR(Render_Vulkan,
+        LOG_CRITICAL(Render_Vulkan,
                   "Shader link error\n"
                   "Program Info Log:\n"
                   "{}\n{}",
@@ -252,6 +254,22 @@ vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, v
     }
 
     return CompileSPV(out_code, device);
+}
+
+vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, vk::Device device,
+                         std::vector<std::string> defines) {
+    return CompileImpl(code, stage, device, std::move(defines),
+                       glslang::EShTargetLanguageVersion::EShTargetSpv_1_3);
+}
+
+// [CSBATCH] Declared by its only caller (vk_shader_hle.cpp): vk_shader_util.h is outside the
+// patch set. spv15=false is exactly Compile().
+vk::ShaderModule CompileWithSpvTarget(std::string_view code, vk::ShaderStageFlagBits stage,
+                                      vk::Device device, std::vector<std::string> defines,
+                                      bool spv15) {
+    return CompileImpl(code, stage, device, std::move(defines),
+                       spv15 ? glslang::EShTargetLanguageVersion::EShTargetSpv_1_5
+                             : glslang::EShTargetLanguageVersion::EShTargetSpv_1_3);
 }
 
 vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {

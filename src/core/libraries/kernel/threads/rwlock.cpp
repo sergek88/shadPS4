@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/elf_info.h"
+#include "common/postmortem.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/kernel/process.h"
@@ -95,6 +96,7 @@ int PthreadRwlock::Rdlock(const OrbisKernelTimespec* abstime) {
             return POSIX_ETIMEDOUT;
         }
     } else {
+        Postmortem::GuestWaitScope wait_scope{"rwlock_rdlock", reinterpret_cast<u64>(this)};
         lock.lock_shared();
     }
 
@@ -124,6 +126,7 @@ int PthreadRwlock::Wrlock(const OrbisKernelTimespec* abstime) {
             return POSIX_ETIMEDOUT;
         }
     } else {
+        Postmortem::GuestWaitScope wait_scope{"rwlock_wrlock", reinterpret_cast<u64>(this)};
         lock.lock();
     }
 
