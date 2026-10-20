@@ -7175,6 +7175,7 @@ void BufferCache::BackimpPrefetchStep() {
 void BufferCache::ProcessFaultBuffer() {
     if (debug_watched_addr != 0) {
         DebugCompareWatched(debug_watched_addr);
+#ifdef _WIN32
     } else if (const char* watch = std::getenv("SHADPS4_WATCHLOW"); watch != nullptr) {
         // Hunt for the job object directly: it always sits at the same offset inside a 1 MiB
         // block of the guest heap, so only a few hundred addresses need checking, and its
@@ -7211,6 +7212,7 @@ void BufferCache::ProcessFaultBuffer() {
                 }
             }
         }
+#endif
     }
     FlushPendingHostImports();
     // [BACKIMP] Cheap steady_clock check; prints at most once per five seconds.
