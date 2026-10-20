@@ -113,8 +113,7 @@ bool Swapchain::AcquireNextImage() {
     vk::Device device = instance.GetDevice();
 
     if (!acquire_fence) {
-        acquire_fence =
-            device.createFence(vk::FenceCreateInfo{}).value;
+        acquire_fence = device.createFence(vk::FenceCreateInfo{}).value;
     }
     // Retire graveyard fences that have signalled since.
     std::erase_if(retired_acquire_fences, [&](vk::Fence f) {
@@ -140,8 +139,8 @@ bool Swapchain::AcquireNextImage() {
         // work against it; on timeout the frame is skipped instead.
         const auto fence_wait = device.waitForFences(acquire_fence, true, 500'000'000ULL);
         if (fence_wait == vk::Result::eTimeout) {
-            LOG_WARNING(Render_Vulkan,
-                        "Acquire of image {} not ready in 500 ms, skipping present", image_index);
+            LOG_WARNING(Render_Vulkan, "Acquire of image {} not ready in 500 ms, skipping present",
+                        image_index);
             retired_acquire_fences.push_back(acquire_fence);
             acquire_fence = device.createFence(vk::FenceCreateInfo{}).value;
             needs_recreation = true;

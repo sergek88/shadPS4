@@ -108,8 +108,7 @@ public:
     static std::optional<Buffer> CreateBackingBacked(const Vulkan::Instance& instance,
                                                      Vulkan::Scheduler& scheduler, VAddr base,
                                                      u64 size, const char** reject_reason,
-                                                     const char* via,
-                                                     bool force_mode = false);
+                                                     const char* via, bool force_mode = false);
 
     struct HostImportTag {};
     /// No-allocation constructor used only by CreateHostImport.
@@ -191,9 +190,9 @@ public:
         if (PreciseStages()) {
             constexpr vk::AccessFlags2 kReads =
                 vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eIndexRead |
-                vk::AccessFlagBits2::eVertexAttributeRead | vk::AccessFlagBits2::eIndirectCommandRead |
-                vk::AccessFlagBits2::eUniformRead | vk::AccessFlagBits2::eTransferRead |
-                vk::AccessFlagBits2::eMemoryRead;
+                vk::AccessFlagBits2::eVertexAttributeRead |
+                vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eUniformRead |
+                vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eMemoryRead;
             const bool read_only = (dst_acess_mask & ~kReads) == vk::AccessFlags2{};
             const bool visible_to_all = (access_mask & vk::AccessFlagBits2::eMemoryRead) &&
                                         stage == vk::PipelineStageFlagBits2::eAllCommands;

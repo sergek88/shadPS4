@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
-#include <filesystem>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <filesystem>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
-#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -17,15 +17,15 @@
 #include <windows.h>
 #endif
 #include <chrono>
-#include <fstream>
-#include <immintrin.h>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <immintrin.h>
 #include "common/alignment.h"
 #include "common/debug.h"
-#include "common/scope_exit.h"
 #include "common/memory_patcher.h"
 #include "common/postmortem.h"
+#include "common/scope_exit.h"
 #include "common/thread.h"
 #include "core/emulator_settings.h" // [SKINDIRECT-STORES] readbacks mode in the census line
 #include "core/memory.h"
@@ -49,7 +49,7 @@ namespace Vulkan {
 void DumpStalledSubmits(u64 gpu_tick, u64 waiting_tick, u64 slow_ms);
 extern std::atomic<u32> g_dbg_frame_no;
 extern std::atomic<u64> g_dbg_upload_bytes;
-}
+} // namespace Vulkan
 
 namespace VideoCore {
 
@@ -63,10 +63,10 @@ struct Range {
 };
 static std::vector<Range> g_ranges;
 static std::unique_ptr<std::atomic<u32>[]> g_counters; // pages * NUM_FIELDS, per window
-static std::unique_ptr<u32[]> g_total;                  // pages * NUM_FIELDS, cumulative
+static std::unique_ptr<u32[]> g_total;                 // pages * NUM_FIELDS, cumulative
 static u32 g_pages = 0;
 static bool g_enabled = false;
-static std::unique_ptr<u8[]> g_seen_up;      // the first UP of a page is the cpu.Fill() initial state
+static std::unique_ptr<u8[]> g_seen_up; // the first UP of a page is the cpu.Fill() initial state
 static std::unique_ptr<u8[]> g_classes_seen; // bit per class ever assigned (P F R M S I)
 static std::atomic<u32> g_stalls{0};
 
@@ -147,7 +147,8 @@ void Note(VAddr addr, Field field) {
         g_seen_up[slot] = 1;
         return;
     }
-    g_counters[static_cast<size_t>(slot) * NUM_FIELDS + field].fetch_add(1, std::memory_order_relaxed);
+    g_counters[static_cast<size_t>(slot) * NUM_FIELDS + field].fetch_add(1,
+                                                                         std::memory_order_relaxed);
 }
 
 void NoteStall() {
@@ -308,8 +309,9 @@ static void ParseRanges(const char* p, std::vector<Range>& out) {
     std::vector<Range> merged;
     for (const auto& r : out) {
         if (!merged.empty() && merged.back().base + merged.back().size >= r.base) {
-            merged.back().size = std::max(merged.back().base + merged.back().size, r.base + r.size) -
-                                 merged.back().base;
+            merged.back().size =
+                std::max(merged.back().base + merged.back().size, r.base + r.size) -
+                merged.back().base;
         } else {
             merged.push_back(r);
         }
@@ -473,8 +475,8 @@ void Subtract(VAddr addr, u64 size) {
         }
     }
     if (changed) {
-        LOG_CRITICAL(Render_Vulkan, "HOMEPOLICY: unmap {:#x}:{:#x} trims import ranges {} -> {}", addr,
-                     size, g_import.size(), out.size());
+        LOG_CRITICAL(Render_Vulkan, "HOMEPOLICY: unmap {:#x}:{:#x} trims import ranges {} -> {}",
+                     addr, size, g_import.size(), out.size());
         g_import.swap(out);
     }
 }
@@ -629,7 +631,8 @@ struct SkinDirectEntry {
     u64 hash;
     u32 sharp_idx;
     u32 word;
-    bool is_store; // [SKINDIRECT-STORES] output V#: bound WRITTEN binding instead of write_const_live
+    bool is_store; // [SKINDIRECT-STORES] output V#: bound WRITTEN binding instead of
+                   // write_const_live
 };
 constexpr u32 kSkinDirectMax = 64;
 std::array<SkinDirectEntry, kSkinDirectMax> g_skind_reg{};
@@ -639,11 +642,12 @@ std::atomic<u64> g_skind_converted{0}; // reads whose BDA rewrite was declined
 std::atomic<u64> g_skind_declined{0};  // matched the word but the V# was not bindable
 // [SKINDIRECT-STORES] compile-time census (atomics: shader compiles may run on worker threads)
 std::atomic<u64> g_skind_converted_stores{0}; // store IR insts kept on a written binding
-std::atomic<u64> g_skind_lowered_stores{0};   // ...that LowerBufferFormatToRaw turned into raw OpStores
-std::atomic<u64> g_skind_fmt0_stores{0};      // ...dropped by the FMT0 guard (zero V# permutation)
-std::atomic<u64> g_skind_store_shape_odd{0};  // compile-time V# was not the 28-byte record shape
-std::atomic<u64> g_skind_meta_skips{0};       // dispatch of a listed shader eaten by IsComputeMetaClear
-std::atomic<u32> g_skind_store_entries{0};    // registry entries with is_store
+std::atomic<u64> g_skind_lowered_stores{
+    0};                                  // ...that LowerBufferFormatToRaw turned into raw OpStores
+std::atomic<u64> g_skind_fmt0_stores{0}; // ...dropped by the FMT0 guard (zero V# permutation)
+std::atomic<u64> g_skind_store_shape_odd{0}; // compile-time V# was not the 28-byte record shape
+std::atomic<u64> g_skind_meta_skips{0}; // dispatch of a listed shader eaten by IsComputeMetaClear
+std::atomic<u32> g_skind_store_entries{0}; // registry entries with is_store
 
 // [LOSTUPD] SHADPS4_LOSTUPD=1. The symptom under investigation is the character keeping its
 // previous pose: a limb stays drawn where it was a frame ago. One mechanism produces exactly
@@ -663,9 +667,9 @@ std::atomic<u32> g_skind_store_entries{0};    // registry entries with is_store
 // The check cannot run inside the upload callback: ForEachUploadRange holds the region lock
 // while calling it and IsRegionGpuModified takes the same non-recursive lock - that is a hang,
 // not a slowdown. Ranges are therefore collected first and tested after the lock is gone.
-std::atomic<u64> g_lostupd_runs{0};    // read-path upload runs landing on GPU-written pages
-std::atomic<u64> g_lostupd_bytes{0};   // ...their total size
-std::atomic<u64> g_lostupd_total{0};   // all read-path upload runs, for the share
+std::atomic<u64> g_lostupd_runs{0};  // read-path upload runs landing on GPU-written pages
+std::atomic<u64> g_lostupd_bytes{0}; // ...their total size
+std::atomic<u64> g_lostupd_total{0}; // all read-path upload runs, for the share
 bool LostUpdateProbeFlag() {
     static const bool v = [] {
         const char* e = std::getenv("SHADPS4_LOSTUPD");
@@ -690,8 +694,8 @@ bool LostUpdateProbeFlag() {
 // The flag turns the missing request on and counts it. Asking is nearly free: GetBarrier emits
 // only when the buffer's recorded access actually flips, so the read->read draws that follow
 // the first one cost one compare.
-std::atomic<u64> g_vtxbar_asked{0};     // vertex binds where the import-backed owner was asked
-std::atomic<u64> g_vtxbar_emitted{0};   // ...and a barrier really came out
+std::atomic<u64> g_vtxbar_asked{0};   // vertex binds where the import-backed owner was asked
+std::atomic<u64> g_vtxbar_emitted{0}; // ...and a barrier really came out
 bool VertexBarrierImportFlag() {
     static const bool v = [] {
         const char* e = std::getenv("SHADPS4_VTXBAR");
@@ -755,12 +759,13 @@ bool SkinDirectStoresFlag() {
         const bool disk_cache = EmulatorSettings.IsPipelineCacheEnabled() ||
                                 (pcache_env && !EmulatorSettings.IsPipelineCacheArchived());
         if (disk_cache) {
-            LOG_CRITICAL(Render_Vulkan,
-                         "SKINDIRECT-STORES: REFUSED - the disk pipeline cache is on (toml={} "
-                         "SHADPS4_PCACHE={}); a preloaded program binds permutations with a "
-                         "different descriptor layout (PERMLAYOUT). Run with SHADPS4_PCACHE=0 and "
-                         "the toml cache off; the census will print converted_stores=0 for this run",
-                         EmulatorSettings.IsPipelineCacheEnabled() ? 1 : 0, pcache_env ? 1 : 0);
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "SKINDIRECT-STORES: REFUSED - the disk pipeline cache is on (toml={} "
+                "SHADPS4_PCACHE={}); a preloaded program binds permutations with a "
+                "different descriptor layout (PERMLAYOUT). Run with SHADPS4_PCACHE=0 and "
+                "the toml cache off; the census will print converted_stores=0 for this run",
+                EmulatorSettings.IsPipelineCacheEnabled() ? 1 : 0, pcache_env ? 1 : 0);
             return false;
         }
         return true;
@@ -814,7 +819,6 @@ bool SkinDirectStoreVerifyFlag() {
 }
 } // namespace
 
-
 static constexpr size_t DataShareBufferSize = 64_KB;
 static constexpr size_t StagingBufferSize = 512_MB;
 static constexpr size_t DownloadBufferSize = 32_MB;
@@ -831,8 +835,8 @@ std::atomic<u64> c_wait{0}, c_ok{0}, c_timeout{0}, c_wait_us{0};
 std::atomic<VAddr> last_addr{0};
 std::atomic<s64> next_ms{0};
 // TryServeFaultFast (RBSTAT) counters.
-std::atomic<u64> c_fast{0}, c_no_buffer{0}, c_unsubmitted{0}, c_empty{0}, c_changed{0},
-    c_lat_us{0}, c_import_heal{0}, c_heal_nobk{0};
+std::atomic<u64> c_fast{0}, c_no_buffer{0}, c_unsubmitted{0}, c_empty{0}, c_changed{0}, c_lat_us{0},
+    c_import_heal{0}, c_heal_nobk{0};
 std::atomic<s64> next_report_ms{0};
 // Maxima of the fatal tail (CAS-max, never reset by the periodic reporters).
 std::atomic<u64> rb_lat_max_us{0}, nb_wait_max_us{0};
@@ -878,35 +882,29 @@ namespace rbstat {
 void DumpReadbackPostmortem() {
     const s64 now = Postmortem::NowMs();
     const s64 wnd = next_report_ms.load(std::memory_order_relaxed);
-    LOG_CRITICAL(Render_Vulkan,
-                 "POSTMORTEM-RB: window_age_ms={} fast={} no_buf={} unsub={} empty={} changed={} "
-                 "heal={} nobk={} lat_sum_us={} lat_max_us={}",
-                 wnd ? now - (wnd - 5000) : -1, c_fast.load(std::memory_order_relaxed),
-                 c_no_buffer.load(std::memory_order_relaxed),
-                 c_unsubmitted.load(std::memory_order_relaxed),
-                 c_empty.load(std::memory_order_relaxed), c_changed.load(std::memory_order_relaxed),
-                 c_import_heal.load(std::memory_order_relaxed),
-                 c_heal_nobk.load(std::memory_order_relaxed),
-                 c_lat_us.load(std::memory_order_relaxed),
-                 rb_lat_max_us.load(std::memory_order_relaxed));
-    LOG_CRITICAL(Render_Vulkan,
-                 "POSTMORTEM-NOBK: wait={} ok={} timeout={} sum_us={} max_us={} last={:#x}",
-                 c_wait.load(std::memory_order_relaxed), c_ok.load(std::memory_order_relaxed),
-                 c_timeout.load(std::memory_order_relaxed),
-                 c_wait_us.load(std::memory_order_relaxed),
-                 nb_wait_max_us.load(std::memory_order_relaxed),
-                 last_addr.load(std::memory_order_relaxed));
+    LOG_CRITICAL(
+        Render_Vulkan,
+        "POSTMORTEM-RB: window_age_ms={} fast={} no_buf={} unsub={} empty={} changed={} "
+        "heal={} nobk={} lat_sum_us={} lat_max_us={}",
+        wnd ? now - (wnd - 5000) : -1, c_fast.load(std::memory_order_relaxed),
+        c_no_buffer.load(std::memory_order_relaxed), c_unsubmitted.load(std::memory_order_relaxed),
+        c_empty.load(std::memory_order_relaxed), c_changed.load(std::memory_order_relaxed),
+        c_import_heal.load(std::memory_order_relaxed), c_heal_nobk.load(std::memory_order_relaxed),
+        c_lat_us.load(std::memory_order_relaxed), rb_lat_max_us.load(std::memory_order_relaxed));
+    LOG_CRITICAL(
+        Render_Vulkan, "POSTMORTEM-NOBK: wait={} ok={} timeout={} sum_us={} max_us={} last={:#x}",
+        c_wait.load(std::memory_order_relaxed), c_ok.load(std::memory_order_relaxed),
+        c_timeout.load(std::memory_order_relaxed), c_wait_us.load(std::memory_order_relaxed),
+        nb_wait_max_us.load(std::memory_order_relaxed), last_addr.load(std::memory_order_relaxed));
     const s64 nb_inflight = tw_nobk_inflight_ms.load(std::memory_order_relaxed);
-    LOG_CRITICAL(Render_Vulkan,
-                 "POSTMORTEM-TW: lock_us={} slow_us={} fence_us={} poll_us={} nobk_us={} "
-                 "nobk_cnt={} nobk_inflight_ms={}",
-                 tw_lock_us.load(std::memory_order_relaxed),
-                 tw_slow_us.load(std::memory_order_relaxed),
-                 tw_fence_us.load(std::memory_order_relaxed),
-                 tw_poll_us.load(std::memory_order_relaxed),
-                 tw_nobk_us.load(std::memory_order_relaxed),
-                 tw_nobk_cnt.load(std::memory_order_relaxed),
-                 nb_inflight ? now - nb_inflight : 0);
+    LOG_CRITICAL(
+        Render_Vulkan,
+        "POSTMORTEM-TW: lock_us={} slow_us={} fence_us={} poll_us={} nobk_us={} "
+        "nobk_cnt={} nobk_inflight_ms={}",
+        tw_lock_us.load(std::memory_order_relaxed), tw_slow_us.load(std::memory_order_relaxed),
+        tw_fence_us.load(std::memory_order_relaxed), tw_poll_us.load(std::memory_order_relaxed),
+        tw_nobk_us.load(std::memory_order_relaxed), tw_nobk_cnt.load(std::memory_order_relaxed),
+        nb_inflight ? now - nb_inflight : 0);
     {
         const u64 seq = dl_seq.load(std::memory_order_relaxed);
         const u64 hint = VideoCore::g_crash_addr_hint.load(std::memory_order_relaxed);
@@ -961,20 +959,21 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
       download_buffer{instance, scheduler, MemoryUsage::Download, DownloadBufferSize},
       device_buffer{instance, scheduler, MemoryUsage::DeviceLocal, DeviceBufferSize},
       gds_buffer{instance, scheduler, MemoryUsage::Stream, 0, AllFlags, DataShareBufferSize},
-      bda_pagetable_buffer{instance, scheduler,
-                           [] {
-                               // SHADPS4_PTHOST=1: device-local host-visible (ReBAR) page
-                               // table. Residency repair becomes a plain CPU store that a
-                               // spinning shader observes immediately - the repair no longer
-                               // queues BEHIND the very dispatch that spins on the missing
-                               // entry (that ordering was a GPU hang -> driver reset).
-                               const char* e = std::getenv("SHADPS4_PTHOST");
-                               return e && e[0] == '1' ? MemoryUsage::Stream
-                                                       : MemoryUsage::DeviceLocal;
-                           }(),
-                           0, AllFlags,
-                           DualHomeEnabled() ? BDA_PAGETABLE_SIZE + DUAL_TABLE_BYTES
-                                             : BDA_PAGETABLE_SIZE} {
+      bda_pagetable_buffer{
+          instance,
+          scheduler,
+          [] {
+              // SHADPS4_PTHOST=1: device-local host-visible (ReBAR) page
+              // table. Residency repair becomes a plain CPU store that a
+              // spinning shader observes immediately - the repair no longer
+              // queues BEHIND the very dispatch that spins on the missing
+              // entry (that ordering was a GPU hang -> driver reset).
+              const char* e = std::getenv("SHADPS4_PTHOST");
+              return e && e[0] == '1' ? MemoryUsage::Stream : MemoryUsage::DeviceLocal;
+          }(),
+          0,
+          AllFlags,
+          DualHomeEnabled() ? BDA_PAGETABLE_SIZE + DUAL_TABLE_BYTES : BDA_PAGETABLE_SIZE} {
     Vulkan::SetObjectName(instance.GetDevice(), gds_buffer.Handle(), "GDS Buffer");
     Vulkan::SetObjectName(instance.GetDevice(), bda_pagetable_buffer.Handle(),
                           "BDA Page Table Buffer");
@@ -1009,7 +1008,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
                         e <= DUAL_WINDOW_BASE + (DUAL_WINDOW_PAGES << CACHING_PAGEBITS)) {
                         dual_ranges.emplace_back(b, e - b);
                     } else {
-                        LOG_CRITICAL(Render_Vulkan, "DUALHOME: range {:#x}:{:#x} outside the window, ignored",
+                        LOG_CRITICAL(Render_Vulkan,
+                                     "DUALHOME: range {:#x}:{:#x} outside the window, ignored",
                                      d_base, d_size);
                     }
                     cursor += consumed;
@@ -1021,9 +1021,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
                 }
             }
         }
-        dual_sink = std::make_unique<Buffer>(instance, scheduler, MemoryUsage::DeviceLocal, 0,
-                                             AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-                                             DUAL_SINK_BYTES);
+        dual_sink = std::make_unique<Buffer>(
+            instance, scheduler, MemoryUsage::DeviceLocal, 0,
+            AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, DUAL_SINK_BYTES);
         Vulkan::SetObjectName(instance.GetDevice(), dual_sink->Handle(), "Dual Home Sink");
         const vk::DeviceAddress sink = dual_sink->BufferDeviceAddress();
         std::vector<vk::DeviceAddress> window(DUAL_WINDOW_PAGES + 1);
@@ -1139,7 +1139,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     // leaves the slot zero, which the shader treats as "no bitmap" - never fatal.
     if (PollMapEnabled()) {
         PollMap::Init();
-    CpuWrittenEver::Init();
+        CpuWrittenEver::Init();
         pollmap_buffer = std::make_unique<Buffer>(
             instance, scheduler, MemoryUsage::Download, 0,
             AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, POLLMAP_BYTES);
@@ -1230,8 +1230,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         if (e && e[0] == '1') {
             std::scoped_lock gm{gpu_modified_mutex};
             cpu_authority_ranges.Add(0x1200000000ull, 0x10000000ull);
-            LOG_CRITICAL(Render_Vulkan,
-                         "STACKSHIELD: guest stack band under sticky CPU authority");
+            LOG_CRITICAL(Render_Vulkan, "STACKSHIELD: guest stack band under sticky CPU authority");
         }
     }
 
@@ -1254,8 +1253,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             if (const char* r = std::getenv("SHADPS4_LABELUMA_RANGE")) {
                 // Comma-separated hexbase:hexsize list - the callback reads
                 // several arenas, one seed rarely covers them all.
-                const u64 align = std::max<u64>(
-                    instance.GetMinImportedHostPointerAlignment(), CACHING_PAGESIZE);
+                const u64 align =
+                    std::max<u64>(instance.GetMinImportedHostPointerAlignment(), CACHING_PAGESIZE);
                 const char* cursor = r;
                 while (*cursor != '\0') {
                     u64 base = 0, size = 0;
@@ -1278,8 +1277,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
                 label_budget = std::strtoull(m, nullptr, 10) * 1_MB;
             }
             for (const auto& [sb, ss] : label_seeds) {
-                LOG_CRITICAL(Render_Vulkan, "LABELUMA: enabled, seed {:#x}:{:#x}, budget {} MB",
-                             sb, ss, label_budget >> 20);
+                LOG_CRITICAL(Render_Vulkan, "LABELUMA: enabled, seed {:#x}:{:#x}, budget {} MB", sb,
+                             ss, label_budget >> 20);
             }
         }
     }
@@ -1420,8 +1419,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
                 .level = vk::CommandBufferLevel::ePrimary,
                 .commandBufferCount = 2,
             };
-            auto [cb_result, cbs] =
-                instance.GetDevice().allocateCommandBuffersUnique(alloc_info);
+            auto [cb_result, cbs] = instance.GetDevice().allocateCommandBuffersUnique(alloc_info);
             if (cb_result == vk::Result::eSuccess) {
                 for (u32 i = 0; i < 2; ++i) {
                     rb_slots[i].cmdbuf = std::move(cbs[i]);
@@ -1431,9 +1429,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
                         return;
                     }
                     rb_slots[i].fence = std::move(fence);
-                    rb_slots[i].staging = std::make_unique<Buffer>(
-                        instance, scheduler, MemoryUsage::Download, 0,
-                        vk::BufferUsageFlagBits::eTransferDst, 512_KB);
+                    rb_slots[i].staging =
+                        std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Download, 0,
+                                                 vk::BufferUsageFlagBits::eTransferDst, 512_KB);
                 }
                 rb_ready = true;
                 LOG_CRITICAL(Render_Vulkan, "RBQUEUE: readback engine ready");
@@ -1490,7 +1488,7 @@ void BufferCache::SpinRescueInit() {
     spin_enabled = true;
     spin_snoop = snoop;
     spin_import_mode = import_mode; // import+ builds host imports (needs snoop resources)
-    spin_full = full;              // full publishes via pt_patch
+    spin_full = full;               // full publishes via pt_patch
     if (const char* ms = std::getenv("SHADPS4_SPINRESCUE_MS")) {
         const u32 v = static_cast<u32>(std::strtoul(ms, nullptr, 10));
         if (v != 0) {
@@ -1552,9 +1550,9 @@ void BufferCache::SpinRescueInit() {
         }
         if (ok) {
             const u64 fb_size = fault_manager.GetFaultBufferSize();
-            spin_staging = std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Download, 0,
-                                                    vk::BufferUsageFlagBits::eTransferDst,
-                                                    fb_size + 4_KB);
+            spin_staging =
+                std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Download, 0,
+                                         vk::BufferUsageFlagBits::eTransferDst, fb_size + 4_KB);
             spin_probe_buf = std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Download, 0,
                                                       vk::BufferUsageFlagBits::eStorageBuffer, 256);
         }
@@ -1575,8 +1573,8 @@ void BufferCache::SpinRescueInit() {
             vk::ShaderModule module{};
             if (dlr == vk::Result::eSuccess) {
                 spin_probe_layout = std::move(dl);
-                module = Vulkan::Compile(kSpinProbeComp, vk::ShaderStageFlagBits::eCompute, device,
-                                         {});
+                module =
+                    Vulkan::Compile(kSpinProbeComp, vk::ShaderStageFlagBits::eCompute, device, {});
             }
             if (module) {
                 const vk::PipelineShaderStageCreateInfo stage_ci = {
@@ -1626,8 +1624,9 @@ void BufferCache::SpinRescueInit() {
         const bool int64_atomics =
             f12.get<vk::PhysicalDeviceVulkan12Features>().shaderBufferInt64Atomics == VK_TRUE;
         if (!int64_atomics) {
-            LOG_CRITICAL(Render_Vulkan,
-                         "SPINRESCUE: shaderBufferInt64Atomics unsupported, staying in import mode");
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "SPINRESCUE: shaderBufferInt64Atomics unsupported, staying in import mode");
             spin_full = false;
         }
     }
@@ -1695,9 +1694,9 @@ void main() {
             device.destroyShaderModule(module);
         }
         // params: 16-byte header (count + 3 pad) + 256 * 12-byte entries.
-        spin_params_buf = std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Upload, 0,
-                                                   vk::BufferUsageFlagBits::eStorageBuffer,
-                                                   16 + 256 * 12);
+        spin_params_buf =
+            std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Upload, 0,
+                                     vk::BufferUsageFlagBits::eStorageBuffer, 16 + 256 * 12);
         if (!ok || !spin_patch_pipeline) {
             LOG_CRITICAL(Render_Vulkan, "SPINRESCUE: pt_patch pipeline build failed, import only");
             spin_full = false;
@@ -1886,7 +1885,8 @@ bool BufferCache::SpinReadDeviceEntry(u64 page, vk::DeviceAddress& out) {
         vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     spin_cmdbuf->copyBuffer(table, spin_staging->Handle(),
                             vk::BufferCopy{.srcOffset = page * sizeof(vk::DeviceAddress),
-                                           .dstOffset = fb_size, .size = sizeof(vk::DeviceAddress)});
+                                           .dstOffset = fb_size,
+                                           .size = sizeof(vk::DeviceAddress)});
     (void)spin_cmdbuf->end();
     if (!SpinSubmitWait(100'000'000ULL)) {
         return false;
@@ -2037,8 +2037,7 @@ void BufferCache::SpinImportAndPublish(std::span<const u64> pages, u64 gpu_tick)
         // (3) truth in VRAM -> skip (v1). gpu_modified without cpu_authority and not CPU-dirty.
         {
             std::scoped_lock gm{gpu_modified_mutex};
-            const bool gpu_mod =
-                gpu_modified_ranges.Intersects(page_addr, CACHING_PAGESIZE);
+            const bool gpu_mod = gpu_modified_ranges.Intersects(page_addr, CACHING_PAGESIZE);
             const bool cpu_auth = cpu_authority_ranges.Intersects(page_addr, CACHING_PAGESIZE);
             if (gpu_mod && !cpu_auth) {
                 continue;
@@ -2060,7 +2059,8 @@ void BufferCache::SpinImportAndPublish(std::span<const u64> pages, u64 gpu_tick)
     std::ranges::sort(valid);
 
     // Coalesce adjacent pages into runs (<= maxrun), import each run, publish its entries.
-    const u64 align = std::max<u64>(instance.GetMinImportedHostPointerAlignment(), CACHING_PAGESIZE);
+    const u64 align =
+        std::max<u64>(instance.GetMinImportedHostPointerAlignment(), CACHING_PAGESIZE);
     boost::container::small_vector<std::pair<u64, vk::DeviceAddress>, 32> to_publish;
     boost::container::small_vector<VAddr, 32> corrections;
     // [BACKIMP] With the backing import alive, rescue buffers bind over already-pinned memory:
@@ -2148,7 +2148,7 @@ void BufferCache::SpinImportAndPublish(std::span<const u64> pages, u64 gpu_tick)
 #ifdef _WIN32
 // K32* live in kernel32.dll on every supported Windows, so no psapi.h and no extra link input.
 extern "C" __declspec(dllimport) int __stdcall K32EnumProcessModules(void*, void**, unsigned long,
-                                                                    unsigned long*);
+                                                                     unsigned long*);
 extern "C" __declspec(dllimport) unsigned long __stdcall K32GetModuleBaseNameA(void*, void*, char*,
                                                                                unsigned long);
 struct HostModInfo {
@@ -2157,7 +2157,7 @@ struct HostModInfo {
     void* entry;
 };
 extern "C" __declspec(dllimport) int __stdcall K32GetModuleInformation(void*, void*, HostModInfo*,
-                                                                      unsigned long);
+                                                                       unsigned long);
 #endif
 
 namespace {
@@ -2278,18 +2278,18 @@ void GuestStallSnapshot(u64 silent_ms) {
             if (cs != nullptr) {
                 const s64 last = cs->last_ms.load(std::memory_order_relaxed);
                 const s64 sig_age = last ? now_ms - last : -1;
-                const char* verdict = sig_age < 0                 ? "NEVER_SIGNALLED"
-                                      : (sig_age > waited)        ? "ALL_SIGNALS_PREDATE_WAIT"
-                                                                  : "SIGNALLED_DURING_WAIT";
-                std::snprintf(waiting, sizeof(waiting),
-                              "<%s a0=%#llx a1=%#llx for %lldms last_signal_age=%lldms "
-                              "signals_total=%llu %s>",
-                              s.wait_what, static_cast<unsigned long long>(s.wait_a0),
-                              static_cast<unsigned long long>(s.wait_a1),
-                              static_cast<long long>(waited), static_cast<long long>(sig_age),
-                              static_cast<unsigned long long>(
-                                  cs->count.load(std::memory_order_relaxed)),
-                              verdict);
+                const char* verdict = sig_age < 0          ? "NEVER_SIGNALLED"
+                                      : (sig_age > waited) ? "ALL_SIGNALS_PREDATE_WAIT"
+                                                           : "SIGNALLED_DURING_WAIT";
+                std::snprintf(
+                    waiting, sizeof(waiting),
+                    "<%s a0=%#llx a1=%#llx for %lldms last_signal_age=%lldms "
+                    "signals_total=%llu %s>",
+                    s.wait_what, static_cast<unsigned long long>(s.wait_a0),
+                    static_cast<unsigned long long>(s.wait_a1), static_cast<long long>(waited),
+                    static_cast<long long>(sig_age),
+                    static_cast<unsigned long long>(cs->count.load(std::memory_order_relaxed)),
+                    verdict);
             } else if (is_cond) {
                 std::snprintf(waiting, sizeof(waiting),
                               "<%s a0=%#llx a1=%#llx for %lldms signals_total=0 NEVER_SIGNALLED>",
@@ -2308,9 +2308,9 @@ void GuestStallSnapshot(u64 silent_ms) {
         LOG_CRITICAL(Render_Vulkan,
                      "GUESTSTALL: tid={}{} name={} rip={:#x} rsp={:#x} module={} waiting_on={} "
                      "rax={:#x} rcx={:#x} rdx={:#x} rbx={:#x} rsi={:#x} rdi={:#x}{}",
-                     s.tid, s.tid == tw_tid ? "*TICKWRITER" : "", s.name, s.ctx.Rip, s.ctx.Rsp,
-                     loc, waiting, s.ctx.Rax, s.ctx.Rcx, s.ctx.Rdx, s.ctx.Rbx, s.ctx.Rsi,
-                     s.ctx.Rdi, same ? " SPINNING_AT_SAME_RIP" : "");
+                     s.tid, s.tid == tw_tid ? "*TICKWRITER" : "", s.name, s.ctx.Rip, s.ctx.Rsp, loc,
+                     waiting, s.ctx.Rax, s.ctx.Rcx, s.ctx.Rdx, s.ctx.Rbx, s.ctx.Rsi, s.ctx.Rdi,
+                     same ? " SPINNING_AT_SAME_RIP" : "");
         // Unlabelled host wait: the top of the stack usually holds the return address into
         // whichever wrapper called into ntdll, which names the primitive even when no marker
         // covers it. ReadProcessMemory so an unreadable stack fails quietly; still no dbghelp.
@@ -2347,12 +2347,12 @@ void GuestStallSnapshot(u64 silent_ms) {
             const Postmortem::CondSignalRec& r = Postmortem::g_cond_ring[k % Postmortem::kCondRing];
             const s64 ms = r.ms.load(std::memory_order_acquire);
             if (n < static_cast<int>(sizeof(line)) - 56) {
-                n += std::snprintf(line + n, sizeof(line) - n, " %#llx%s@%lldms(tid%u)",
-                                   static_cast<unsigned long long>(
-                                       r.cond.load(std::memory_order_relaxed)),
-                                   r.bcast.load(std::memory_order_relaxed) ? "B" : "S",
-                                   static_cast<long long>(ms ? now_ms - ms : -1),
-                                   r.tid.load(std::memory_order_relaxed));
+                n += std::snprintf(
+                    line + n, sizeof(line) - n, " %#llx%s@%lldms(tid%u)",
+                    static_cast<unsigned long long>(r.cond.load(std::memory_order_relaxed)),
+                    r.bcast.load(std::memory_order_relaxed) ? "B" : "S",
+                    static_cast<long long>(ms ? now_ms - ms : -1),
+                    r.tid.load(std::memory_order_relaxed));
             }
         }
         if (seq_now == 0) {
@@ -2385,9 +2385,9 @@ void GuestStallSnapshot(u64 silent_ms) {
     // Oldest link = the one that stopped first. Links never seen at all (-1) are skipped:
     // "never happened" is a different verdict from "happened long ago".
     const std::pair<const char*, s64> links[] = {
-        {"submit", a_submit},        {"submitdone", a_sdone},   {"flipreq", a_flipreq},
-        {"flip", a_flip},            {"vblank_wait", a_vblank}, {"vblank_tick", a_vbtick},
-        {"eop_signal", a_eopsig},    {"eop_dispatch", a_eopdisp}, {"tick_write", a_tick},
+        {"submit", a_submit},     {"submitdone", a_sdone},     {"flipreq", a_flipreq},
+        {"flip", a_flip},         {"vblank_wait", a_vblank},   {"vblank_tick", a_vbtick},
+        {"eop_signal", a_eopsig}, {"eop_dispatch", a_eopdisp}, {"tick_write", a_tick},
     };
     const char* first_name = "none";
     s64 first_age = -1;
@@ -2430,8 +2430,8 @@ void GuestStallSnapshot(u64 silent_ms) {
                 continue;
             }
             if (n < static_cast<int>(sizeof(sl)) - 48) {
-                n += std::snprintf(sl + n, sizeof(sl) - n, " %s inc=%llu dec=%llu |",
-                                   site_names[i], static_cast<unsigned long long>(inc),
+                n += std::snprintf(sl + n, sizeof(sl) - n, " %s inc=%llu dec=%llu |", site_names[i],
+                                   static_cast<unsigned long long>(inc),
                                    static_cast<unsigned long long>(dec));
             }
         }
@@ -2519,7 +2519,8 @@ void GuestStallSnapshot(u64 silent_ms) {
             // Guest threads are named through the same helper; they already got a full report.
             bool is_guest = false;
             for (u32 j = 0; j < Postmortem::kMaxGuestThreads && !is_guest; ++j) {
-                is_guest = Postmortem::g_guest_threads[j].tid.load(std::memory_order_acquire) == tid;
+                is_guest =
+                    Postmortem::g_guest_threads[j].tid.load(std::memory_order_acquire) == tid;
             }
             if (is_guest) {
                 continue;
@@ -2530,7 +2531,8 @@ void GuestStallSnapshot(u64 silent_ms) {
                 continue;
             }
             Shot shot{tid, Postmortem::g_host_threads[i].name, {}, false, nullptr, 0, 0, 0};
-            shot.wait_what = Postmortem::g_host_threads[i].wait_what.load(std::memory_order_acquire);
+            shot.wait_what =
+                Postmortem::g_host_threads[i].wait_what.load(std::memory_order_acquire);
             shot.wait_a0 = Postmortem::g_host_threads[i].wait_a0.load(std::memory_order_relaxed);
             shot.wait_a1 = Postmortem::g_host_threads[i].wait_a1.load(std::memory_order_relaxed);
             shot.wait_since =
@@ -2636,8 +2638,8 @@ void BufferCache::SpinRescueLoop(std::stop_token stop) {
         }
         if (behind && held_ms >= spin_stall_ms && !acted) {
             PageTrace::NoteStall();
-            LOG_CRITICAL(Render_Vulkan, "SPINWATCH: gpu_tick={} stalled {} ms submitted={}", counter,
-                         held_ms, current);
+            LOG_CRITICAL(Render_Vulkan, "SPINWATCH: gpu_tick={} stalled {} ms submitted={}",
+                         counter, held_ms, current);
             // [GPUSTALL] Name the submits that are actually still executing, and any compute in
             // them that has been in flight long enough to be a non-terminating shader rather
             // than heavy work. Diagnostic only - nothing is killed.
@@ -2657,7 +2659,6 @@ void BufferCache::SpinRescueLoop(std::stop_token stop) {
         }
     }
 }
-
 
 // [debug] SHADPS4_BUFWATCH=<hex guest address>: report every buffer that covers this address.
 // The read-fault histogram names a 16 MiB range; this names the buffer living in it.
@@ -2740,8 +2741,8 @@ void BufferCache::ReleaseLabelRegion(VAddr addr, u64 size) {
         static u32 logged = 0;
         if (logged < 8 && HomePolicy::WantsImport(addr, size)) {
             ++logged;
-            LOG_CRITICAL(Render_Vulkan, "HOMEPOLICY: unmap {:#x}:{:#x} touches import ranges (kept)", addr,
-                         size);
+            LOG_CRITICAL(Render_Vulkan,
+                         "HOMEPOLICY: unmap {:#x}:{:#x} touches import ranges (kept)", addr, size);
         }
     }
     if (!label_uma_enabled || !IntersectsLabelImport(addr, size)) {
@@ -2818,8 +2819,8 @@ void BufferCache::PromoteLabelRegions() {
         // An image over the range would lose its image->buffer sync silently.
         if (texture_cache.FindImageFromRange(base, size)) {
             LOG_CRITICAL(Render_Vulkan,
-                         "LABELUMA: range {:#x}:{:#x} owned by an image, promotion skipped",
-                         base, size);
+                         "LABELUMA: range {:#x}:{:#x} owned by an image, promotion skipped", base,
+                         size);
             continue;
         }
         {
@@ -2839,12 +2840,11 @@ void BufferCache::PromoteLabelRegions() {
             std::scoped_lock gm{gpu_modified_mutex};
             label_import_ranges.Add(buffer.CpuAddr(), buffer.SizeBytes());
             std::erase_if(label_retries, [&](const LabelRetry& r) {
-                return r.base >= buffer.CpuAddr() &&
-                       r.base < buffer.CpuAddr() + buffer.SizeBytes();
+                return r.base >= buffer.CpuAddr() && r.base < buffer.CpuAddr() + buffer.SizeBytes();
             });
         }
-        LOG_CRITICAL(Render_Vulkan, "LABELUMA: promoted {:#x}:{:#x} bda={:#x}",
-                     buffer.CpuAddr(), buffer.SizeBytes(), buffer.BufferDeviceAddress());
+        LOG_CRITICAL(Render_Vulkan, "LABELUMA: promoted {:#x}:{:#x} bda={:#x}", buffer.CpuAddr(),
+                     buffer.SizeBytes(), buffer.BufferDeviceAddress());
         // Pre-promotion tracker marks inside the span become orphans: their tick
         // entries get served or migrated away, but a mark with no tick entry can
         // only refault - the fast path sees "empty", the slow path refuses import
@@ -2853,16 +2853,16 @@ void BufferCache::PromoteLabelRegions() {
         // level load that starved the GfxEop callback into the frame-ring
         // assert). Cleanse the whole span once the migration copies retire -
         // any earlier and the CPU reads stale bytes mid-copy (the v1 wound).
-        scheduler.DeferOperation([this, span_base = buffer.CpuAddr(),
-                                  span_size = buffer.SizeBytes()] {
-            {
-                std::scoped_lock gm{gpu_modified_mutex};
-                gpu_modified_ranges.Subtract(span_base, span_size);
-            }
-            memory_tracker->UnmarkRegionAsGpuModified(span_base, span_size);
-            LOG_CRITICAL(Render_Vulkan, "LABELUMA: cleansed {:#x}:{:#x} at retire",
-                         span_base, span_size);
-        });
+        scheduler.DeferOperation(
+            [this, span_base = buffer.CpuAddr(), span_size = buffer.SizeBytes()] {
+                {
+                    std::scoped_lock gm{gpu_modified_mutex};
+                    gpu_modified_ranges.Subtract(span_base, span_size);
+                }
+                memory_tracker->UnmarkRegionAsGpuModified(span_base, span_size);
+                LOG_CRITICAL(Render_Vulkan, "LABELUMA: cleansed {:#x}:{:#x} at retire", span_base,
+                             span_size);
+            });
     }
 }
 
@@ -2885,8 +2885,6 @@ void BufferCache::MarkGpuWrittenRegion(VAddr device_addr, u64 size) {
     }
     memory_tracker->MarkRegionAsGpuModified(device_addr, size);
 }
-
-
 
 // [fix] NOBK: MEM_RESERVE inside the PRT "pretend mapped" aperture is a hole in
 // host backing, not tracker protection - unmark cannot cure it (protection bits
@@ -2919,9 +2917,9 @@ bool BufferCache::WaitForBacking(VAddr device_addr) {
         std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
     }
     (committed ? rbstat::c_ok : rbstat::c_timeout).fetch_add(1, std::memory_order_relaxed);
-    const u64 nb_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                          std::chrono::steady_clock::now() - t0)
-                          .count();
+    const u64 nb_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
     rbstat::c_wait_us.fetch_add(nb_us, std::memory_order_relaxed);
     Postmortem::AtomicMax(rbstat::nb_wait_max_us, nb_us);
     if (pm_tw) {
@@ -3149,7 +3147,8 @@ void BufferCache::SkinVramCreateRing() {
     // transfer->compute barrier in a loop that runs ~217 times per frame (the very drains
     // CSBARRIER exists to delete). Host writes issued before vkQueueSubmit are visible to the
     // device by definition, and the slot's previous reader is already retired (IsFree).
-    skin.ring = std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Stream, 0, flags, window);
+    skin.ring =
+        std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Stream, 0, flags, window);
     VkMemoryPropertyFlags props{};
     vmaGetAllocationMemoryProperties(instance.GetAllocator(), skin.ring->buffer.allocation, &props);
     const bool device_local = (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
@@ -3238,8 +3237,8 @@ void BufferCache::SkinVramInit() {
                  "SKINVRAM: on hashes={} base={:#x} ring={} MB slot={} KB slots={} bda={:#x} "
                  "guard={:#x} host_ring={}",
                  skin.hashes.size(), skin.synth_base, skin.ring_bytes >> 20, skin.slot_bytes >> 10,
-                 skin.num_slots, static_cast<u64>(skin.ring_bda),
-                 skin.synth_base + skin.ring_bytes, skin.host_ring);
+                 skin.num_slots, static_cast<u64>(skin.ring_bda), skin.synth_base + skin.ring_bytes,
+                 skin.host_ring);
 }
 
 bool BufferCache::SkinVramNoteFaultPage(VAddr page) {
@@ -3397,8 +3396,7 @@ void BufferCache::SkinDirectNoteImgInvSkipped() {
     ++skind.store_imginv_skipped;
 }
 
-u8 BufferCache::SkinDirectNote(u64 pgm_hash, u32 sharp_idx, VAddr base, u64 size,
-                               bool is_written) {
+u8 BufferCache::SkinDirectNote(u64 pgm_hash, u32 sharp_idx, VAddr base, u64 size, bool is_written) {
     const u32 n = g_skind_reg_n.load(std::memory_order_acquire);
     u32 word = 0;
     bool found = false;
@@ -3500,8 +3498,8 @@ u8 BufferCache::SkinDirectNote(u64 pgm_hash, u32 sharp_idx, VAddr base, u64 size
     return 1;
 }
 
-void BufferCache::SkinDirectNoteStoreBind(VAddr base, u64 size, const Buffer& owner,
-                                          bool unbounded, bool barrier_emitted) {
+void BufferCache::SkinDirectNoteStoreBind(VAddr base, u64 size, const Buffer& owner, bool unbounded,
+                                          bool barrier_emitted) {
     ++skind.store_bound;
     // Home by the owner's flags, AFTER ObtainBuffer: on the first touch there is no owner before
     // it, and PageHomeKind would cost buffers_mutex + an address-space lookup per bind.
@@ -3524,8 +3522,8 @@ void BufferCache::SkinDirectNoteStoreBind(VAddr base, u64 size, const Buffer& ow
         ++skind.store_oversize;
         if (!skind.logged_store_oversize) {
             skind.logged_store_oversize = true;
-            LOG_CRITICAL(Render_Vulkan, "[SKINDIRECT-STORE] output V# at {:#x} declares {:#x} bytes",
-                         base, size);
+            LOG_CRITICAL(Render_Vulkan,
+                         "[SKINDIRECT-STORE] output V# at {:#x} declares {:#x} bytes", base, size);
         }
     }
     // [R1] home 4: the page-table entry of a listed page points at guest RAM while the bound
@@ -3548,13 +3546,14 @@ void BufferCache::SkinDirectNoteStoreBind(VAddr base, u64 size, const Buffer& ow
             ++skind.store_pt;
             if (!skind.logged_store_pt) {
                 skind.logged_store_pt = true;
-                LOG_CRITICAL(Render_Vulkan,
-                             "[SKINDIRECT-STORE] output {:#x}+{:#x} has a PT-redirected page under "
-                             "a VRAM owner: bound store -> VRAM, PT readers/CPU -> guest RAM, and "
-                             "the PT heal uploads stale guest RAM over it (home-4 divergence). Give "
-                             "the arena an import owner (SHADPS4_BACKIMP_PREFETCH) or drop it from "
-                             "SHADPS4_HOMEPOLICY_PT; pt_hits counts every such bind",
-                             base, size);
+                LOG_CRITICAL(
+                    Render_Vulkan,
+                    "[SKINDIRECT-STORE] output {:#x}+{:#x} has a PT-redirected page under "
+                    "a VRAM owner: bound store -> VRAM, PT readers/CPU -> guest RAM, and "
+                    "the PT heal uploads stale guest RAM over it (home-4 divergence). Give "
+                    "the arena an import owner (SHADPS4_BACKIMP_PREFETCH) or drop it from "
+                    "SHADPS4_HOMEPOLICY_PT; pt_hits counts every such bind",
+                    base, size);
             }
         }
     }
@@ -3602,12 +3601,12 @@ void BufferCache::SkinDirectVerifyUpload(VAddr addr, u64 size) {
                 ++skind.logged_uploads;
                 // readbacks Disabled: this upload overwrote GPU results (lost update).
                 // Relaxed/Precise: InvalidateRegion downloaded first, the upload is legitimate.
-                LOG_CRITICAL(Render_Vulkan,
-                             "[SKINDIRECT-STORE] guest-RAM upload {:#x}+{:#x} lands inside converted "
-                             "output {:#x}+{:#x} (home {}, bound tick {}, now {}, readbacks={})",
-                             addr, size, o.base, o.size, static_cast<u32>(o.home), o.tick,
-                             scheduler.CurrentTick(),
-                             static_cast<int>(EmulatorSettings.GetReadbacksMode()));
+                LOG_CRITICAL(
+                    Render_Vulkan,
+                    "[SKINDIRECT-STORE] guest-RAM upload {:#x}+{:#x} lands inside converted "
+                    "output {:#x}+{:#x} (home {}, bound tick {}, now {}, readbacks={})",
+                    addr, size, o.base, o.size, static_cast<u32>(o.home), o.tick,
+                    scheduler.CurrentTick(), static_cast<int>(EmulatorSettings.GetReadbacksMode()));
             }
             return;
         }
@@ -3664,36 +3663,34 @@ void BufferCache::SkinVramReport() {
                      "SKINDIRECT: converted_reads={} compile_declines={} bound={} null={} "
                      "gpumod={} oversize={} shaders_x_words={} gpumod_probe={}",
                      g_skind_converted.load(std::memory_order_relaxed),
-                     g_skind_declined.load(std::memory_order_relaxed), skind.bound,
-                     skind.null_desc, skind.gpumod, skind.oversize,
-                     g_skind_reg_n.load(std::memory_order_acquire),
+                     g_skind_declined.load(std::memory_order_relaxed), skind.bound, skind.null_desc,
+                     skind.gpumod, skind.oversize, g_skind_reg_n.load(std::memory_order_acquire),
                      skind.gpumod_probe ? 1 : 0);
         // [SKINDIRECT-STORES] the proof line of the store conversion: converted_stores counts
         // recompiler actions (3 IR stores x compiles for the worker), bound counts dispatches
         // whose output descriptor reached a cache-owned buffer. A flag being on is not proof.
         if (SkinDirectStoresFlag()) {
-            LOG_CRITICAL(Render_Vulkan,
-                         "SKINDIRECT-STORES: converted_stores={} lowered={} fmt0={} shape_odd={} "
-                         "store_entries={} | bound={} null={} oversize={} unbounded={} "
-                         "home[vram/import/backing]={}/{}/{} pt_hits={} barriers={} "
-                         "imginv_skipped={} metaclear_skips={} readbacks={} | out_guard: "
-                         "armed={} stream_skips={} snapro_skips={} vtx_barriers={} | verify={}: "
-                         "uploads_in_output={} consumer_hits={} consumer_stream={} "
-                         "consumer_nobarrier={}",
-                         g_skind_converted_stores.load(std::memory_order_relaxed),
-                         g_skind_lowered_stores.load(std::memory_order_relaxed),
-                         g_skind_fmt0_stores.load(std::memory_order_relaxed),
-                         g_skind_store_shape_odd.load(std::memory_order_relaxed),
-                         g_skind_store_entries.load(std::memory_order_relaxed), skind.store_bound,
-                         skind.store_null, skind.store_oversize, skind.store_unbounded,
-                         skind.store_home[1], skind.store_home[2], skind.store_home[3],
-                         skind.store_pt, skind.store_barriers, skind.store_imginv_skipped,
-                         g_skind_meta_skips.load(std::memory_order_relaxed),
-                         static_cast<int>(EmulatorSettings.GetReadbacksMode()),
-                         skind.out_armed ? 1 : 0, skind.out_stream_skips, skind.out_snapro_skips,
-                         skind.out_vtx_barriers, SkinDirectStoreVerifyFlag() ? 1 : 0,
-                         skind.uploads_in_output, skind.consumer_hits, skind.consumer_stream,
-                         skind.consumer_nobarrier);
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "SKINDIRECT-STORES: converted_stores={} lowered={} fmt0={} shape_odd={} "
+                "store_entries={} | bound={} null={} oversize={} unbounded={} "
+                "home[vram/import/backing]={}/{}/{} pt_hits={} barriers={} "
+                "imginv_skipped={} metaclear_skips={} readbacks={} | out_guard: "
+                "armed={} stream_skips={} snapro_skips={} vtx_barriers={} | verify={}: "
+                "uploads_in_output={} consumer_hits={} consumer_stream={} "
+                "consumer_nobarrier={}",
+                g_skind_converted_stores.load(std::memory_order_relaxed),
+                g_skind_lowered_stores.load(std::memory_order_relaxed),
+                g_skind_fmt0_stores.load(std::memory_order_relaxed),
+                g_skind_store_shape_odd.load(std::memory_order_relaxed),
+                g_skind_store_entries.load(std::memory_order_relaxed), skind.store_bound,
+                skind.store_null, skind.store_oversize, skind.store_unbounded, skind.store_home[1],
+                skind.store_home[2], skind.store_home[3], skind.store_pt, skind.store_barriers,
+                skind.store_imginv_skipped, g_skind_meta_skips.load(std::memory_order_relaxed),
+                static_cast<int>(EmulatorSettings.GetReadbacksMode()), skind.out_armed ? 1 : 0,
+                skind.out_stream_skips, skind.out_snapro_skips, skind.out_vtx_barriers,
+                SkinDirectStoreVerifyFlag() ? 1 : 0, skind.uploads_in_output, skind.consumer_hits,
+                skind.consumer_stream, skind.consumer_nobarrier);
         }
     }
     if (!skin.config_ok) {
@@ -4066,9 +4063,8 @@ bool BufferCache::TryServeFaultFast(VAddr device_addr, u64 size, bool is_write) 
                              "RBSTAT: fast={} no_buf={} unsub={} empty={} changed={} heal={} "
                              "nobk={} avg_us={}",
                              fast, c_no_buffer.exchange(0), c_unsubmitted.exchange(0),
-                             c_empty.exchange(0), c_changed.exchange(0),
-                             c_import_heal.exchange(0), c_heal_nobk.exchange(0),
-                             fast ? c_lat_us.exchange(0) / fast : 0);
+                             c_empty.exchange(0), c_changed.exchange(0), c_import_heal.exchange(0),
+                             c_heal_nobk.exchange(0), fast ? c_lat_us.exchange(0) / fast : 0);
             }
         }
     };
@@ -4147,9 +4143,8 @@ bool BufferCache::TryServeFaultFast(VAddr device_addr, u64 size, bool is_write) 
     // Same widening as the slow path: dirty data comes as scattered islands.
     constexpr u64 WindowSize = 512_KB;
     const VAddr win_start = std::max<VAddr>(Common::AlignDown(device_addr, WindowSize), buf_start);
-    const VAddr win_end =
-        std::min<VAddr>(std::max<VAddr>(win_start + WindowSize, device_addr + size),
-                        buf_start + buf_size);
+    const VAddr win_end = std::min<VAddr>(
+        std::max<VAddr>(win_start + WindowSize, device_addr + size), buf_start + buf_size);
 
     // One critical section: collect ranges, find the newest writing tick,
     // reject unsubmitted work, and only then subtract - a gap between collect
@@ -4170,18 +4165,18 @@ bool BufferCache::TryServeFaultFast(VAddr device_addr, u64 size, bool is_write) 
             staging_used = 0;
             needed_tick = content_tick;
             bool overflow = false;
-            gpu_modified_ranges.ForEachInRange(
-                win_start, win_end - win_start, [&](VAddr start, VAddr end, const u64& tick) {
-                    const u64 len = end - start;
-                    const u64 aligned = (len + 63) & ~u64{63};
-                    if (staging_used + aligned > 512_KB) {
-                        overflow = true;
-                        return;
-                    }
-                    ranges.push_back({start, end, staging_used});
-                    staging_used += aligned;
-                    needed_tick = std::max(needed_tick, tick);
-                });
+            gpu_modified_ranges.ForEachInRange(win_start, win_end - win_start,
+                                               [&](VAddr start, VAddr end, const u64& tick) {
+                                                   const u64 len = end - start;
+                                                   const u64 aligned = (len + 63) & ~u64{63};
+                                                   if (staging_used + aligned > 512_KB) {
+                                                       overflow = true;
+                                                       return;
+                                                   }
+                                                   ranges.push_back({start, end, staging_used});
+                                                   staging_used += aligned;
+                                                   needed_tick = std::max(needed_tick, tick);
+                                               });
             if (overflow) {
                 c_changed.fetch_add(1, std::memory_order_relaxed);
                 unpin();
@@ -4195,8 +4190,7 @@ bool BufferCache::TryServeFaultFast(VAddr device_addr, u64 size, bool is_write) 
                 // load that starved the GfxEop callback into the frame-ring
                 // assert. Unprotecting IS the whole service.
                 const VAddr heal_start = Common::AlignDown(device_addr, CACHING_PAGESIZE);
-                const VAddr heal_end =
-                    Common::AlignUp(device_addr + size, CACHING_PAGESIZE);
+                const VAddr heal_end = Common::AlignUp(device_addr + size, CACHING_PAGESIZE);
                 // [BACKIMP] A backing buffer is import-backed too, and in `all` mode it is
                 // reached through the ORDINARY CreateBuffer path, so it never enters
                 // label_import_ranges - without this the heal above can never fire for it and
@@ -4215,8 +4209,7 @@ bool BufferCache::TryServeFaultFast(VAddr device_addr, u64 size, bool is_write) 
                         unpin();
                         return true;
                     }
-                    memory_tracker->UnmarkRegionAsGpuModified(heal_start,
-                                                              heal_end - heal_start);
+                    memory_tracker->UnmarkRegionAsGpuModified(heal_start, heal_end - heal_start);
                     if (is_write) {
                         cpu_authority_ranges.Add(device_addr, size);
                         memory_tracker->MarkRegionAsCpuModified(device_addr, size);
@@ -4286,8 +4279,8 @@ bool BufferCache::TryServeFaultFast(VAddr device_addr, u64 size, bool is_write) 
     {
         std::scoped_lock lk{buffers_mutex};
         const BufferId check_id = page_table[device_addr >> CACHING_PAGEBITS].buffer_id;
-        const bool same = check_id && check_id.index == pinned_index &&
-                          !slot_buffers[check_id].is_deleted;
+        const bool same =
+            check_id && check_id.index == pinned_index && !slot_buffers[check_id].is_deleted;
         if (!same) {
             std::scoped_lock gm{gpu_modified_mutex};
             for (const auto& r : ranges) {
@@ -4475,9 +4468,9 @@ bool BufferCache::TryServeFaultFast(VAddr device_addr, u64 size, bool is_write) 
     unpin();
     c_fast.fetch_add(1, std::memory_order_relaxed);
     PageTrace::Note(device_addr, PageTrace::CRS);
-    const u64 pm_lat_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                              std::chrono::steady_clock::now() - t0)
-                              .count();
+    const u64 pm_lat_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
     c_lat_us.fetch_add(pm_lat_us, std::memory_order_relaxed);
     Postmortem::AtomicMax(rb_lat_max_us, pm_lat_us);
     return true;
@@ -4565,16 +4558,14 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write) {
                     const u32 v = fine[i].load(std::memory_order_relaxed);
                     if (v > ftop[3].first) {
                         ftop[3] = {v, i};
-                        std::sort(ftop.begin(), ftop.end(),
-                                  [](const auto& a2, const auto& b2) {
-                                      return a2.first > b2.first;
-                                  });
+                        std::sort(ftop.begin(), ftop.end(), [](const auto& a2, const auto& b2) {
+                            return a2.first > b2.first;
+                        });
                     }
                     fine[i].store(0, std::memory_order_relaxed);
                 }
                 if (ftop[0].first != 0) {
-                    LOG_CRITICAL(Render_Vulkan,
-                                 "READFINE: {:#x}:{} {:#x}:{} {:#x}:{} {:#x}:{}",
+                    LOG_CRITICAL(Render_Vulkan, "READFINE: {:#x}:{} {:#x}:{} {:#x}:{} {:#x}:{}",
                                  FineBase + (u64{ftop[0].second} << 20), ftop[0].first,
                                  FineBase + (u64{ftop[1].second} << 20), ftop[1].first,
                                  FineBase + (u64{ftop[2].second} << 20), ftop[2].first,
@@ -5019,8 +5010,9 @@ void BufferCache::DebugCompareWatched(VAddr device_addr) {
     download_buffer.Commit();
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.copyBuffer(buffer.buffer, download_buffer.Handle(),
-                      vk::BufferCopy{.srcOffset = offset_in_buffer, .dstOffset = offset, .size = 64});
+    cmdbuf.copyBuffer(
+        buffer.buffer, download_buffer.Handle(),
+        vk::BufferCopy{.srcOffset = offset_in_buffer, .dstOffset = offset, .size = 64});
     scheduler.Finish();
     std::string gpu_hex, guest_hex;
     const u8* guest = std::bit_cast<const u8*>(device_addr);
@@ -5028,8 +5020,8 @@ void BufferCache::DebugCompareWatched(VAddr device_addr) {
         fmt::format_to(std::back_inserter(gpu_hex), "{:02x}", download[i]);
         fmt::format_to(std::back_inserter(guest_hex), "{:02x}", guest[i]);
     }
-    LOG_CRITICAL(Render_Vulkan, "WATCHCMP addr={:#x}\n  gpu  ={}\n  guest={}", device_addr,
-                 gpu_hex, guest_hex);
+    LOG_CRITICAL(Render_Vulkan, "WATCHCMP addr={:#x}\n  gpu  ={}\n  guest={}", device_addr, gpu_hex,
+                 guest_hex);
 }
 
 // [CONSTCACHE] SHADPS4_CONSTCACHE=1 (default 0). The same constant ranges are snapshotted into
@@ -5079,8 +5071,7 @@ u64 BufferCache::ConstCacheCopy(VAddr device_addr, u32 size) {
             Postmortem::g_constcache_hits.fetch_add(1, std::memory_order_relaxed);
             if (verify) {
                 g_cc_verify_hits.fetch_add(1, std::memory_order_relaxed);
-                const u64 now_sum =
-                    ConstCacheSum(std::bit_cast<const u8*>(device_addr), size);
+                const u64 now_sum = ConstCacheSum(std::bit_cast<const u8*>(device_addr), size);
                 if (now_sum != it->second.sum) {
                     g_cc_verify_stale.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -5098,8 +5089,8 @@ u64 BufferCache::ConstCacheCopy(VAddr device_addr, u32 size) {
         Postmortem::g_constcache_wrap_in_copy.fetch_add(1, std::memory_order_relaxed);
     }
     const_cache_wrap = wrap_after;
-    const_cache[key] = ConstEntry{
-        offset, verify ? ConstCacheSum(std::bit_cast<const u8*>(device_addr), size) : 0};
+    const_cache[key] =
+        ConstEntry{offset, verify ? ConstCacheSum(std::bit_cast<const u8*>(device_addr), size) : 0};
     return offset;
 }
 
@@ -5130,7 +5121,8 @@ std::pair<Buffer*, u32> BufferCache::ObtainBuffer(VAddr device_addr, u32 size, b
         so_t0 = SoClock::now();
     }
     const auto so_us = [](SoClock::time_point a, SoClock::time_point b) {
-        return static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
+        return static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
     };
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
     if (!is_written && size <= CACHING_PAGESIZE) {
@@ -5158,10 +5150,10 @@ std::pair<Buffer*, u32> BufferCache::ObtainBuffer(VAddr device_addr, u32 size, b
             // GPU stores would be missing from the copy.
             Postmortem::UsTimerOpt t{Postmortem::g_buf_streamcopy_us};
             Postmortem::g_buf_streamcopies.fetch_add(1, std::memory_order_relaxed);
-            Postmortem::g_stream_hist[size < 256          ? 0
-                                      : size < 1024       ? 1
+            Postmortem::g_stream_hist[size < 256                ? 0
+                                      : size < 1024             ? 1
                                       : size < CACHING_PAGESIZE ? 2
-                                                          : 3]
+                                                                : 3]
                 .fetch_add(1, std::memory_order_relaxed);
             // [TOUCHSTAT] This path never reaches the backing import: it copies into the
             // device-local stream buffer, so these bytes are already where we would want them.
@@ -5538,7 +5530,8 @@ BufferCache::OverlapResult BufferCache::ResolveOverlaps(VAddr device_addr, u32 w
                     if (wall_logged < 16) {
                         ++wall_logged;
                         LOG_CRITICAL(Render_Vulkan,
-                                     "HOMEPOLICY: wall at {:#x} clips union {:#x}+{:#x} (request {:#x}+{:#x})",
+                                     "HOMEPOLICY: wall at {:#x} clips union {:#x}+{:#x} (request "
+                                     "{:#x}+{:#x})",
                                      o_begin, begin, end - begin, req_begin, req_end - req_begin);
                     }
                     break;
@@ -5600,8 +5593,7 @@ void BufferCache::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
         {
             std::scoped_lock gm{gpu_modified_mutex};
             gpu_modified_ranges.ForEachInRange(
-                overlap.CpuAddr(), overlap.SizeBytes(),
-                [&](VAddr start, VAddr end, const u64&) {
+                overlap.CpuAddr(), overlap.SizeBytes(), [&](VAddr start, VAddr end, const u64&) {
                     if (cpu_authority_ranges.Intersects(start, end - start)) {
                         return;
                     }
@@ -5723,8 +5715,8 @@ BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
                     .GetBackingOffset(wide_begin, wide_end - wide_begin)
                     .has_value()) {
                 Postmortem::UsTimer t{Postmortem::g_buf_overlap_us};
-                const auto wide = ResolveOverlaps(wide_begin, static_cast<u32>(wide_end -
-                                                                              wide_begin));
+                const auto wide =
+                    ResolveOverlaps(wide_begin, static_cast<u32>(wide_end - wide_begin));
                 // Still a miss after widening: nothing to join, so the wider window is free.
                 if (wide.ids.empty()) {
                     device_addr = wide_begin;
@@ -5757,8 +5749,7 @@ BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
                 }
             }
             if (!retried) {
-                label_retries.push_back({overlap.begin, u64{size},
-                                         label_promote_passes + 90, 0});
+                label_retries.push_back({overlap.begin, u64{size}, label_promote_passes + 90, 0});
                 LOG_CRITICAL(Render_Vulkan,
                              "LABELUMA: import failed for {:#x}:{:#x}, retry scheduled",
                              overlap.begin, size);
@@ -5771,7 +5762,8 @@ BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
     // so a range is never attempted - or rejected in the log - twice per call.
     // [DUALHOME] a dual range always gets a VRAM owner; its second home is armed first so the
     // window entries precede the primary entries in command order.
-    const bool dual_range = DualHomeEnabled() && DualHomeMode() < 3 && IsDualRange(overlap.begin, size);
+    const bool dual_range =
+        DualHomeEnabled() && DualHomeMode() < 3 && IsDualRange(overlap.begin, size);
     if (dual_range) {
         ArmDualRangesFor(overlap.begin, size);
     }
@@ -5786,8 +5778,9 @@ BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
         static u32 union_logged = 0;
         if (texture_cache.FindImageFromRange(overlap.begin, size, false)) {
             reason = "needs-staging";
-        } else if (auto backed = Buffer::CreateBackingBacked(instance, scheduler, overlap.begin, size,
-                                                             &reason, "policy", /*force_mode=*/true)) {
+        } else if (auto backed =
+                       Buffer::CreateBackingBacked(instance, scheduler, overlap.begin, size,
+                                                   &reason, "policy", /*force_mode=*/true)) {
             new_buffer_id = slot_buffers.insert(std::move(*backed));
             ++g_policy_owners;
             g_policy_owner_bytes += size;
@@ -5796,11 +5789,12 @@ BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
                 ++g_policy_unions;
                 if (union_logged < 32) {
                     ++union_logged;
-                    LOG_CRITICAL(Render_Vulkan,
-                                 "HOMEPOLICY: union {:#x}+{:#x} forced import ({} KB listed, {} overlaps, "
-                                 "request {:#x}+{:#x}, binder pgm={:#x})",
-                                 overlap.begin, size, covered >> 10, overlap.ids.size(), device_addr,
-                                 wanted_size, g_bind_pgm_hash);
+                    LOG_CRITICAL(
+                        Render_Vulkan,
+                        "HOMEPOLICY: union {:#x}+{:#x} forced import ({} KB listed, {} overlaps, "
+                        "request {:#x}+{:#x}, binder pgm={:#x})",
+                        overlap.begin, size, covered >> 10, overlap.ids.size(), device_addr,
+                        wanted_size, g_bind_pgm_hash);
                 }
             }
         }
@@ -5833,7 +5827,8 @@ BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
             ++g_policy_refused;
             if (refused_logged < 32) {
                 ++refused_logged;
-                LOG_CRITICAL(Render_Vulkan, "HOMEPOLICY: import refused for {:#x}:{:#x} ({}), VRAM home",
+                LOG_CRITICAL(Render_Vulkan,
+                             "HOMEPOLICY: import refused for {:#x}:{:#x} ({}), VRAM home",
                              overlap.begin, size, reason);
             }
         }
@@ -5845,7 +5840,8 @@ BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
         // handing the buffer guest RAM instead breaks that sync silently. LABELUMA refuses such
         // ranges for exactly this reason, and `all` mode meets them constantly, so it needs the
         // same guard - staging semantics the backing path cannot provide.
-        const bool owned_by_image = backimp.IsAvailable() && backimp.ModeAllows(overlap.begin, size) &&
+        const bool owned_by_image = backimp.IsAvailable() &&
+                                    backimp.ModeAllows(overlap.begin, size) &&
                                     texture_cache.FindImageFromRange(overlap.begin, size, false);
         if (owned_by_image) {
             backimp.NoteReject(overlap.begin, size, "needs-staging");
@@ -6079,10 +6075,9 @@ void BufferCache::BywriteCorrectionStep() {
     bywrite_requeue.erase(bywrite_requeue.begin(),
                           bywrite_requeue.begin() + static_cast<std::ptrdiff_t>(cursor));
     if (done != 0) {
-        bywrite_fix_us += static_cast<u64>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - t0)
-                .count());
+        bywrite_fix_us += static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                               std::chrono::steady_clock::now() - t0)
+                                               .count());
         // Read every counter into a local before the log call.
         const u64 f = bywrite_fixed;
         const u64 q = bywrite_requeue.size();
@@ -6118,7 +6113,8 @@ void BufferCache::NoteGpuFaultPage(VAddr page) {
     }
     const VAddr base = page & ~(block - 1);
     std::scoped_lock lk{vram_auto_mutex};
-    if (std::find(vram_auto_blocks.begin(), vram_auto_blocks.end(), base) != vram_auto_blocks.end() ||
+    if (std::find(vram_auto_blocks.begin(), vram_auto_blocks.end(), base) !=
+            vram_auto_blocks.end() ||
         std::find(vram_auto_done_blocks.begin(), vram_auto_done_blocks.end(), base) !=
             vram_auto_done_blocks.end()) {
         return;
@@ -6152,10 +6148,11 @@ void BufferCache::NoteGpuWrittenPage(VAddr page) {
         static std::atomic<u64> pt_gpu_writes{0};
         const u64 n = pt_gpu_writes.fetch_add(1, std::memory_order_relaxed) + 1;
         if (n <= 4 || n % 65536 == 0) {
-            LOG_CRITICAL(Render_Vulkan,
-                         "HOMEPOLICY-PT: GPU wrote listed page {:#x} in guest RAM, VRAM copy flagged "
-                         "for upload ({} so far)",
-                         page, n);
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "HOMEPOLICY-PT: GPU wrote listed page {:#x} in guest RAM, VRAM copy flagged "
+                "for upload ({} so far)",
+                page, n);
         }
         return;
     }
@@ -6280,7 +6277,8 @@ void BufferCache::PublishDualEntries(const DualPiece& piece) {
     for (u64 i = 0; i < num_pages; ++i) {
         entries[i] = bda + (i << CACHING_PAGEBITS);
     }
-    const u64 offset = BDA_PAGETABLE_SIZE + (first_page - DUAL_WINDOW_BASE_PAGE) * sizeof(vk::DeviceAddress);
+    const u64 offset =
+        BDA_PAGETABLE_SIZE + (first_page - DUAL_WINDOW_BASE_PAGE) * sizeof(vk::DeviceAddress);
     if (!bda_pagetable_buffer.mapped_data.empty()) {
         std::memcpy(bda_pagetable_buffer.mapped_data.data() + offset, entries.data(),
                     num_pages * sizeof(vk::DeviceAddress));
@@ -6344,7 +6342,8 @@ void BufferCache::ArmDualRangesFor(VAddr addr, u64 size) {
                     static u32 logged = 0;
                     if (logged < 16) {
                         ++logged;
-                        LOG_CRITICAL(Render_Vulkan, "DUALHOME: {:#x} not armable yet (unmapped/ineligible)", pos);
+                        LOG_CRITICAL(Render_Vulkan,
+                                     "DUALHOME: {:#x} not armable yet (unmapped/ineligible)", pos);
                     }
                 }
                 break; // retried by DualArmStep
@@ -6353,7 +6352,8 @@ void BufferCache::ArmDualRangesFor(VAddr addr, u64 size) {
             auto backed = Buffer::CreateBackingBacked(instance, scheduler, pos, sz, &reason, "dual",
                                                       DualHomeMode() >= 3);
             if (!backed) {
-                LOG_CRITICAL(Render_Vulkan, "DUALHOME: piece {:#x}:{:#x} refused ({})", pos, sz, reason);
+                LOG_CRITICAL(Render_Vulkan, "DUALHOME: piece {:#x}:{:#x} refused ({})", pos, sz,
+                             reason);
                 break;
             }
             auto piece = std::make_unique<DualPiece>();
@@ -6362,8 +6362,9 @@ void BufferCache::ArmDualRangesFor(VAddr addr, u64 size) {
             piece->buffer = std::make_unique<Buffer>(std::move(*backed));
             PublishDualEntries(*piece);
             dual_armed_bytes += sz;
-            LOG_CRITICAL(Render_Vulkan, "DUALHOME: armed {:#x}:{:#x} bda={:#x} pieces={} total={} MB",
-                         pos, sz, static_cast<u64>(piece->buffer->BufferDeviceAddress()),
+            LOG_CRITICAL(Render_Vulkan,
+                         "DUALHOME: armed {:#x}:{:#x} bda={:#x} pieces={} total={} MB", pos, sz,
+                         static_cast<u64>(piece->buffer->BufferDeviceAddress()),
                          dual_pieces.size() + 1, dual_armed_bytes >> 20);
             dual_pieces.push_back(std::move(piece));
             pos += sz;
@@ -6383,12 +6384,14 @@ void BufferCache::DualArmStep() {
             want += s;
             ArmDualRangesFor(b, s);
         }
-        if (dual_report_next == std::chrono::steady_clock::time_point{} || now >= dual_report_next) {
+        if (dual_report_next == std::chrono::steady_clock::time_point{} ||
+            now >= dual_report_next) {
             dual_report_next = now + std::chrono::seconds(5);
-            LOG_CRITICAL(Render_Vulkan,
-                         "DUALSTAT: armed {} of {} MB in {} pieces | piece copies={} staging bytes={}",
-                         dual_armed_bytes >> 20, want >> 20, dual_pieces.size(), dual_piece_copies,
-                         dual_staging_bytes);
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "DUALSTAT: armed {} of {} MB in {} pieces | piece copies={} staging bytes={}",
+                dual_armed_bytes >> 20, want >> 20, dual_pieces.size(), dual_piece_copies,
+                dual_staging_bytes);
         }
     }
 }
@@ -6417,13 +6420,20 @@ void BufferCache::PageTraceStep() {
     std::array<u64, NUM_FIELDS> sums{};
     const auto cls_index = [](char c) -> u32 {
         switch (c) {
-        case 'P': return 0;
-        case 'M': return 1;
-        case 'R': return 2;
-        case 'S': return 3;
-        case 'I': return 4;
-        case 'F': return 6;
-        default: return 5;
+        case 'P':
+            return 0;
+        case 'M':
+            return 1;
+        case 'R':
+            return 2;
+        case 'S':
+            return 3;
+        case 'I':
+            return 4;
+        case 'F':
+            return 6;
+        default:
+            return 5;
         }
     };
     const u32 stalls = g_stalls.exchange(0, std::memory_order_relaxed);
@@ -6433,7 +6443,8 @@ void BufferCache::PageTraceStep() {
         Row row{slot, {}, 'U', '-'};
         bool any = false;
         for (u32 f = 0; f < NUM_FIELDS; ++f) {
-            const u32 v = g_counters[static_cast<size_t>(slot) * NUM_FIELDS + f].exchange(0, std::memory_order_relaxed);
+            const u32 v = g_counters[static_cast<size_t>(slot) * NUM_FIELDS + f].exchange(
+                0, std::memory_order_relaxed);
             row.c[f] = v;
             g_total[static_cast<size_t>(slot) * NUM_FIELDS + f] += v;
             sums[f] += v;
@@ -6482,18 +6493,20 @@ void BufferCache::PageTraceStep() {
         }
         rows.push_back(row);
     }
-    LOG_CRITICAL(Render_Vulkan,
-                 "PAGETRACE w{}: P={} F={} M={} R={} S={} I={} U={} active={} | ft={} gw={} dl={} cw={} "
-                 "cr={} crs={} cra={} up={} spa={} spb={} pj={} stalls={} spb_pages={} pj_pages={}",
-                 window_no, cls_count[0], cls_count[6], cls_count[1], cls_count[2], cls_count[3],
-                 cls_count[4], cls_count[5], rows.size(), sums[FT], sums[GW], sums[DL], sums[CW],
-                 sums[CR], sums[CRS], sums[CRA], sums[UP], sums[SPA], sums[SPB], sums[PJ], stalls,
-                 spb_pages, pj_pages);
+    LOG_CRITICAL(
+        Render_Vulkan,
+        "PAGETRACE w{}: P={} F={} M={} R={} S={} I={} U={} active={} | ft={} gw={} dl={} cw={} "
+        "cr={} crs={} cra={} up={} spa={} spb={} pj={} stalls={} spb_pages={} pj_pages={}",
+        window_no, cls_count[0], cls_count[6], cls_count[1], cls_count[2], cls_count[3],
+        cls_count[4], cls_count[5], rows.size(), sums[FT], sums[GW], sums[DL], sums[CW], sums[CR],
+        sums[CRS], sums[CRA], sums[UP], sums[SPA], sums[SPB], sums[PJ], stalls, spb_pages,
+        pj_pages);
     if (stalls != 0 && spb_pages == 0 && pj_pages == 0) {
-        LOG_CRITICAL(Render_Vulkan,
-                     "PAGETRACE: {} stall(s) this window with no re-faulting traced page - the polled "
-                     "page is CACHED or outside the traced ranges (POLLJ needed)",
-                     stalls);
+        LOG_CRITICAL(
+            Render_Vulkan,
+            "PAGETRACE: {} stall(s) this window with no re-faulting traced page - the polled "
+            "page is CACHED or outside the traced ranges (POLLJ needed)",
+            stalls);
     }
     const auto top = [&](const char* tag, Field key) {
         std::vector<const Row*> v;
@@ -6502,14 +6515,16 @@ void BufferCache::PageTraceStep() {
                 v.push_back(&r);
             }
         }
-        std::sort(v.begin(), v.end(), [key](const Row* a, const Row* b) { return a->c[key] > b->c[key]; });
+        std::sort(v.begin(), v.end(),
+                  [key](const Row* a, const Row* b) { return a->c[key] > b->c[key]; });
         std::string line;
         for (size_t i = 0; i < v.size() && i < 8; ++i) {
             const Row& r = *v[i];
-            fmt::format_to(std::back_inserter(line),
-                           "{:#x}[{}{}] gw={} cr={} crs={} cra={} up={} cw={} ft={} dl={} sp={}/{} pj={} | ",
-                           PageAddr(r.slot), r.cls, r.home, r.c[GW], r.c[CR], r.c[CRS], r.c[CRA],
-                           r.c[UP], r.c[CW], r.c[FT], r.c[DL], r.c[SPA], r.c[SPB], r.c[PJ]);
+            fmt::format_to(
+                std::back_inserter(line),
+                "{:#x}[{}{}] gw={} cr={} crs={} cra={} up={} cw={} ft={} dl={} sp={}/{} pj={} | ",
+                PageAddr(r.slot), r.cls, r.home, r.c[GW], r.c[CR], r.c[CRS], r.c[CRA], r.c[UP],
+                r.c[CW], r.c[FT], r.c[DL], r.c[SPA], r.c[SPB], r.c[PJ]);
         }
         if (!line.empty()) {
             LOG_CRITICAL(Render_Vulkan, "PAGETRACE-TOP {}: {}", tag, line);
@@ -6531,7 +6546,8 @@ void BufferCache::PageTraceStep() {
     std::ofstream out(path, std::ios::app);
     if (out) {
         for (const auto& r : rows) {
-            out << window_no << ' ' << fmt::format("{:#x}", PageAddr(r.slot)) << ' ' << r.cls << ' ' << r.home;
+            out << window_no << ' ' << fmt::format("{:#x}", PageAddr(r.slot)) << ' ' << r.cls << ' '
+                << r.home;
             for (u32 f = 0; f < NUM_FIELDS; ++f) {
                 out << ' ' << r.c[f];
             }
@@ -6576,11 +6592,10 @@ void BufferCache::PolicyPrefetchStep() {
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_summary) {
         next_summary = now + std::chrono::seconds(5);
-        LOG_CRITICAL(Render_Vulkan,
-                     "HOMEPOLICY: owners={} ({} KB) prearmed={} ({} KB) unions={} refused={}",
-                     g_policy_owners.load(), g_policy_owner_bytes.load() >> 10, g_policy_prearmed.load(),
-                     g_policy_prearmed_bytes.load() >> 10, g_policy_unions.load(),
-                     g_policy_refused.load());
+        LOG_CRITICAL(
+            Render_Vulkan, "HOMEPOLICY: owners={} ({} KB) prearmed={} ({} KB) unions={} refused={}",
+            g_policy_owners.load(), g_policy_owner_bytes.load() >> 10, g_policy_prearmed.load(),
+            g_policy_prearmed_bytes.load() >> 10, g_policy_unions.load(), g_policy_refused.load());
     }
     if (now < next) {
         return;
@@ -6595,7 +6610,9 @@ void BufferCache::PolicyPrefetchStep() {
     u32 created = 0;
     u64 created_bytes = 0;
     static u32 skipped_logged = 0;
-    const auto owned = [&](VAddr page) { return page_table[page >> CACHING_PAGEBITS].buffer_id.operator bool(); };
+    const auto owned = [&](VAddr page) {
+        return page_table[page >> CACHING_PAGEBITS].buffer_id.operator bool();
+    };
     for (const auto& [base, range_size] : HomePolicy::Ranges()) {
         VAddr pos = base;
         const VAddr end = base + range_size;
@@ -6630,7 +6647,8 @@ void BufferCache::PolicyPrefetchStep() {
                 if (skipped_logged < 16) {
                     ++skipped_logged;
                     LOG_CRITICAL(Render_Vulkan, "HOMEPOLICY: {:#x}:{:#x} not armable ({})", pos,
-                                 run_end - pos, ineligible ? "ineligible" : "no contiguous backing");
+                                 run_end - pos,
+                                 ineligible ? "ineligible" : "no contiguous backing");
                 }
                 pos = run_end;
                 continue;
@@ -6646,8 +6664,9 @@ void BufferCache::PolicyPrefetchStep() {
     if (created != 0) {
         g_policy_prearmed += created;
         g_policy_prearmed_bytes += created_bytes;
-        LOG_CRITICAL(Render_Vulkan, "HOMEPOLICY: prearmed {} runs ({} KB) this pass, total {} ({} KB)",
-                     created, created_bytes >> 10, g_policy_prearmed.load(),
+        LOG_CRITICAL(Render_Vulkan,
+                     "HOMEPOLICY: prearmed {} runs ({} KB) this pass, total {} ({} KB)", created,
+                     created_bytes >> 10, g_policy_prearmed.load(),
                      g_policy_prearmed_bytes.load() >> 10);
     }
 }
@@ -6725,7 +6744,8 @@ void BufferCache::PollMapStep() {
                 // arena, 0x1005..0x1026) are already served by the PT redirect; importing their
                 // owners is refused as "split" and falls to a direct host import that the GPU then
                 // faults on (185: ReadInvalid at load). Leave them to the static policy.
-                if (!pollmap_all && HomePolicy::StaticWantsPt(page << CACHING_PAGEBITS, CACHING_PAGESIZE)) {
+                if (!pollmap_all &&
+                    HomePolicy::StaticWantsPt(page << CACHING_PAGEBITS, CACHING_PAGESIZE)) {
                     ++pollmap_staticpt;
                     continue;
                 }
@@ -6842,13 +6862,13 @@ void BufferCache::PollMapStep() {
                     const BufferId owner = page_table[e.page].buffer_id;
                     ++pollmap_redirected;
                     if (pollmap_redirected <= 8 || pollmap_redirected % 256 == 0) {
-                        LOG_CRITICAL(Render_Vulkan,
-                                     "POLLMAP: page {:#x} marked for import (owner {}, {} marked)",
-                                     page_addr,
-                                     owner ? (slot_buffers[owner].is_import_backed ? "import"
-                                                                                    : "vram")
-                                           : "none",
-                                     pollmap_redirected);
+                        LOG_CRITICAL(
+                            Render_Vulkan,
+                            "POLLMAP: page {:#x} marked for import (owner {}, {} marked)",
+                            page_addr,
+                            owner ? (slot_buffers[owner].is_import_backed ? "import" : "vram")
+                                  : "none",
+                            pollmap_redirected);
                     }
                     continue;
                 }
@@ -6936,20 +6956,22 @@ void BufferCache::PollMapStep() {
             fmt::format_to(std::back_inserter(names), "{:#x} ", p);
         }
         u32 pollmap_import_owned = 0;
-    for (const VAddr ra : pollmap_report_pages) {
-        const BufferId o = page_table[ra >> CACHING_PAGEBITS].buffer_id;
-        if (o && slot_buffers[o].is_import_backed) {
-            ++pollmap_import_owned;
+        for (const VAddr ra : pollmap_report_pages) {
+            const BufferId o = page_table[ra >> CACHING_PAGEBITS].buffer_id;
+            if (o && slot_buffers[o].is_import_backed) {
+                ++pollmap_import_owned;
+            }
         }
-    }
-    LOG_CRITICAL(Render_Vulkan,
-                     "POLLMAP: marked={} redirected={} gwskipped={} notcpu={} staticpt={} import_owned={}/{} pending={} dropped={} reapplied={} "
+        LOG_CRITICAL(Render_Vulkan,
+                     "POLLMAP: marked={} redirected={} gwskipped={} notcpu={} staticpt={} "
+                     "import_owned={}/{} pending={} dropped={} reapplied={} "
                      "folds={} sweeps={} (last circle {} us of work over {} ms, worst slice {} "
                      "us, cursor {}/{}) pthost={} new since last report: {}{}",
-                     pollmap_marked, pollmap_redirected, pollmap_gwskipped, pollmap_notcpu, pollmap_staticpt, pollmap_import_owned, pollmap_report_pages.size(), pollmap_pending.size(), pollmap_dropped,
-                     pollmap_reapplied, pollmap_folds, pollmap_sweeps, pollmap_sweep_us,
-                     pollmap_sweep_span_ms, pollmap_slice_max_us, pollmap_sweep_cursor,
-                     POLLMAP_REGIONS, pollmap_pt_host,
+                     pollmap_marked, pollmap_redirected, pollmap_gwskipped, pollmap_notcpu,
+                     pollmap_staticpt, pollmap_import_owned, pollmap_report_pages.size(),
+                     pollmap_pending.size(), pollmap_dropped, pollmap_reapplied, pollmap_folds,
+                     pollmap_sweeps, pollmap_sweep_us, pollmap_sweep_span_ms, pollmap_slice_max_us,
+                     pollmap_sweep_cursor, POLLMAP_REGIONS, pollmap_pt_host,
                      names.empty() ? std::string{"none"} : names,
                      pollmap_report_pages.size() >= kReportPages ? "..." : "");
         pollmap_report_pages.clear();
@@ -7022,7 +7044,8 @@ void BufferCache::VramPrefetchStep() {
         vram_prefetch_buffers += created;
         vram_prefetch_bytes += created_bytes;
         LOG_CRITICAL(Render_Vulkan, "VRAMPREFETCH: +{} buffers ({} MB) this pass, total {} ({} MB)",
-                     created, created_bytes >> 20, vram_prefetch_buffers, vram_prefetch_bytes >> 20);
+                     created, created_bytes >> 20, vram_prefetch_buffers,
+                     vram_prefetch_bytes >> 20);
     }
 }
 
@@ -7035,7 +7058,8 @@ void BufferCache::BackimpPrefetchStep() {
         const auto now = std::chrono::steady_clock::now();
         if (now >= next) {
             next = now + std::chrono::seconds(5);
-            LOG_CRITICAL(Render_Vulkan, "RBQUARTER: delivered={} refused={} (4 KiB quarters, cumulative)",
+            LOG_CRITICAL(Render_Vulkan,
+                         "RBQUARTER: delivered={} refused={} (4 KiB quarters, cumulative)",
                          rb_quarter_delivered.load(), rb_quarter_refused.load());
         }
     }
@@ -7105,9 +7129,8 @@ void BufferCache::BackimpPrefetchStep() {
             if (!off) {
                 // Silent skip: unmapped parts are expected, a later pass retries after the guest
                 // maps them.
-                const VAddr next = region_ineligible
-                                       ? Common::AlignUp(pos + 1, kProbeStep)
-                                       : pos + CACHING_PAGESIZE;
+                const VAddr next = region_ineligible ? Common::AlignUp(pos + 1, kProbeStep)
+                                                     : pos + CACHING_PAGESIZE;
                 pass_skipped += std::min<VAddr>(next, range_end) - pos;
                 pos = std::min<VAddr>(next, range_end);
                 continue;
@@ -7191,8 +7214,8 @@ void BufferCache::ProcessFaultBuffer() {
                 const VAddr candidate = base | low;
                 u32 hdr[16]{};
                 SIZE_T got = 0;
-                if (!ReadProcessMemory(self, reinterpret_cast<LPCVOID>(candidate), hdr,
-                                       sizeof(hdr), &got) ||
+                if (!ReadProcessMemory(self, reinterpret_cast<LPCVOID>(candidate), hdr, sizeof(hdr),
+                                       &got) ||
                     got != sizeof(hdr)) {
                     continue;
                 }
@@ -7230,8 +7253,7 @@ void BufferCache::ImportHostRegion(VAddr addr, u64 size) {
     const auto device = instance.GetDevice();
 
     const auto host_props = device.getMemoryHostPointerPropertiesEXT(
-        vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
-        reinterpret_cast<void*>(base));
+        vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT, reinterpret_cast<void*>(base));
     if (host_props.result != vk::Result::eSuccess || host_props.value.memoryTypeBits == 0) {
         LOG_WARNING(Render_Vulkan, "UMA: host pointer {:#x} not importable ({})", base,
                     vk::to_string(host_props.result));
@@ -7397,17 +7419,19 @@ void BufferCache::WritePageTableRange(u64 page_begin, u64 size_pages) {
                     entries.push_back(e);
                     const u64 n = pt_redirects.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (n <= 4 || n % 65536 == 0) {
-                        LOG_CRITICAL(Render_Vulkan,
-                                     "HOMEPOLICY-PT: page {:#x} -> backing {:#x} (owner {}, redirects {}, "
-                                     "misses {})",
-                                     page_addr, e & ~kBdaLandedBit, owner ? "vram" : "none", n,
-                                     pt_misses.load(std::memory_order_relaxed));
+                        LOG_CRITICAL(
+                            Render_Vulkan,
+                            "HOMEPOLICY-PT: page {:#x} -> backing {:#x} (owner {}, redirects {}, "
+                            "misses {})",
+                            page_addr, e & ~kBdaLandedBit, owner ? "vram" : "none", n,
+                            pt_misses.load(std::memory_order_relaxed));
                     }
                     continue;
                 }
                 const u64 m = pt_misses.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (m <= 4 || m % 4096 == 0) {
-                    LOG_CRITICAL(Render_Vulkan, "HOMEPOLICY-PT: page {:#x} has no backing address (misses {})",
+                    LOG_CRITICAL(Render_Vulkan,
+                                 "HOMEPOLICY-PT: page {:#x} has no backing address (misses {})",
                                  page_addr, m);
                 }
             }
@@ -7577,8 +7601,8 @@ std::string BufferCache::DescribeHostAddress(u64 host_addr) {
             continue;
         }
         if (live_hits++ < 4) {
-            out += fmt::format(" LIVE-ENTRY[page={:#x} guest={:#x} bda={:#x} id={}]", page,
-                               e.guest, e.bda, e.id);
+            out += fmt::format(" LIVE-ENTRY[page={:#x} guest={:#x} bda={:#x} id={}]", page, e.guest,
+                               e.bda, e.id);
         }
     }
     if (live_hits == 0) {
@@ -7608,8 +7632,7 @@ std::string BufferCache::DescribeHostRange(u64 base, u64 size) {
             continue;
         }
         out += fmt::format(" LOG[id={} host={:#x}..{:#x} guest={:#x} reg@{} unreg@{} destroy@{}]",
-                           r.id, r.begin, r.end, r.guest, r.tick_reg, r.tick_unreg,
-                           r.tick_destroy);
+                           r.id, r.begin, r.end, r.guest, r.tick_reg, r.tick_unreg, r.tick_destroy);
     }
     return fmt::format("live entries into range: {}{}", hits, out);
 }
@@ -7847,8 +7870,8 @@ void BufferCache::ChangeRegister(BufferId buffer_id) {
                 for (u64 page = page_begin; page != page_end; ++page) {
                     const vk::DeviceAddress rbda = RescueBdaFor(page << CACHING_PAGEBITS);
                     if (rbda != 0) {
-                        WriteDataBuffer(bda_pagetable_buffer, page * sizeof(vk::DeviceAddress), &rbda,
-                                        sizeof(rbda));
+                        WriteDataBuffer(bda_pagetable_buffer, page * sizeof(vk::DeviceAddress),
+                                        &rbda, sizeof(rbda));
                     }
                 }
             }
@@ -7877,8 +7900,7 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, VAddr device_addr, u32 size,
     // [DUALHOME] a dual owner is refilled by GPU copies from the import piece (guest memory =
     // union of CPU and GPU writes, read at execution time), never from a CPU snapshot that could
     // overwrite a GPU store made after the snapshot.
-    const bool dual_owner =
-        DualHomeEnabled() && IsDualRange(buffer.CpuAddr(), buffer.SizeBytes());
+    const bool dual_owner = DualHomeEnabled() && IsDualRange(buffer.CpuAddr(), buffer.SizeBytes());
     struct PieceCopy {
         vk::Buffer src;
         vk::BufferCopy copy;
@@ -7915,9 +7937,9 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, VAddr device_addr, u32 size,
                         break;
                     }
                     const VAddr part_end = std::min<VAddr>(run_end, piece->base + piece->size);
-                    piece_copies.push_back({piece->buffer->Handle(),
-                                            vk::BufferCopy{cur - piece->base, cur - buffer_start,
-                                                           part_end - cur}});
+                    piece_copies.push_back(
+                        {piece->buffer->Handle(),
+                         vk::BufferCopy{cur - piece->base, cur - buffer_start, part_end - cur}});
                     ++dual_piece_copies;
                     cur = part_end;
                 }
@@ -8338,9 +8360,8 @@ void BufferCache::RunGarbageCollector() {
         const char* e = std::getenv("SHADPS4_BACKIMP_GC");
         return e != nullptr && e[0] == '1';
     }();
-    const bool too_many_backing =
-        backing_gc &&
-        Postmortem::g_res_backing_bufs.load(std::memory_order_relaxed) > BackingGcKeep();
+    const bool too_many_backing = backing_gc && Postmortem::g_res_backing_bufs.load(
+                                                    std::memory_order_relaxed) > BackingGcKeep();
     const bool too_many_allocations =
         (collect_by_count && live_buffers >= BufferCountSoftLimit) || too_many_backing;
     if (total_used_memory < trigger_gc_memory && !too_many_allocations) {
@@ -8466,8 +8487,7 @@ void BufferCache::RunGarbageCollector() {
             static u64 gc_reported = 0;
             if (collected != 0 && gc_reported++ % 8 == 0) {
                 LOG_CRITICAL(Render_Vulkan,
-                             "BACKIMPGC: collected={} kept={} want={} over={} took={}us",
-                             collected,
+                             "BACKIMPGC: collected={} kept={} want={} over={} took={}us", collected,
                              Postmortem::g_res_backing_bufs.load(std::memory_order_relaxed), want,
                              over,
                              std::chrono::duration_cast<std::chrono::microseconds>(

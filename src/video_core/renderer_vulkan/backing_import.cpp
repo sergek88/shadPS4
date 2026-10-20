@@ -126,11 +126,11 @@ bool BackingImport::Init(const Instance& instance, void* backing_base, u64 backi
         parse_ranges(r, prefetch_ranges);
     }
     LOG_CRITICAL(Render_Vulkan, "BACKIMP: mode={} max_kb={} seeds={} prefetch_ranges={}",
-                 mode == Mode::Off      ? "off"
-                 : mode == Mode::All    ? "all"
-                 : mode == Mode::Small  ? "small"
+                 mode == Mode::Off       ? "off"
+                 : mode == Mode::All     ? "all"
+                 : mode == Mode::Small   ? "small"
                  : mode == Mode::ByWrite ? "bywrite"
-                                        : "seeds",
+                                         : "seeds",
                  small_max_bytes >> 10, seed_ranges.size(), prefetch_ranges.size());
 
     if (!instance.IsExternalMemoryHostSupported()) {
@@ -288,9 +288,9 @@ bool BackingImport::EnsureChunkLocked(u32 index) {
     c.memory = memory_res.value;
     c.type_index = type_index;
     imported_bytes += c.size;
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0)
-                        .count();
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
     LOG_CRITICAL(Render_Vulkan, "BACKIMP: chunk[{}] imported on demand ({}ms) total={}MB", index,
                  ms, imported_bytes / kMB);
     return true;
@@ -390,16 +390,16 @@ std::optional<vk::DeviceAddress> BackingImport::PageBda(u64 backing_offset) {
         const bool type_ok = ((req.memoryTypeBits >> chunk->type_index) & 1u) != 0;
         if (!type_ok || req.size > chunk->size ||
             device.bindBufferMemory(buffer, chunk->memory, 0) != vk::Result::eSuccess) {
-            LOG_CRITICAL(Render_Vulkan,
-                         "BACKIMP: whole-chunk buffer for chunk {} unbindable (type_ok={} req={:#x} "
-                         "chunk={:#x})",
-                         index, type_ok, static_cast<u64>(req.size), chunk->size);
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "BACKIMP: whole-chunk buffer for chunk {} unbindable (type_ok={} req={:#x} "
+                "chunk={:#x})",
+                index, type_ok, static_cast<u64>(req.size), chunk->size);
             device.destroyBuffer(buffer);
             return std::nullopt;
         }
         chunk->whole = buffer;
-        chunk->whole_bda =
-            device.getBufferAddress(vk::BufferDeviceAddressInfo{.buffer = buffer});
+        chunk->whole_bda = device.getBufferAddress(vk::BufferDeviceAddressInfo{.buffer = buffer});
         LOG_CRITICAL(Render_Vulkan, "BACKIMP: whole-chunk buffer for chunk {} ({} MB) bda={:#x}",
                      index, chunk->size >> 20, static_cast<u64>(chunk->whole_bda));
     }
@@ -622,10 +622,9 @@ void BackingImport::NoteBind(VAddr guest, u64 size, u64 offset, u64 bda, u64 del
     ++bind_count;
     if (bind_logged < 32) {
         ++bind_logged;
-        LOG_CRITICAL(
-            Render_Vulkan,
-            "BACKIMP: bind guest={:#x} size={:#x} off={:#x} bda={:#x} delta={:#x} via={}", guest,
-            size, offset, bda, delta, via);
+        LOG_CRITICAL(Render_Vulkan,
+                     "BACKIMP: bind guest={:#x} size={:#x} off={:#x} bda={:#x} delta={:#x} via={}",
+                     guest, size, offset, bda, delta, via);
     }
 }
 
@@ -661,11 +660,11 @@ void BackingImport::MaybeLogSummary() {
                  "BACKIMP: live binds={} rejects={} (by reason: {}) | mode={} max_kb={} "
                  "small_backed={} large_vram={}",
                  bind_count, reject_count, by_reason.empty() ? "-" : by_reason,
-                 mode == Mode::Off      ? "off"
-                 : mode == Mode::All    ? "all"
-                 : mode == Mode::Small  ? "small"
+                 mode == Mode::Off       ? "off"
+                 : mode == Mode::All     ? "all"
+                 : mode == Mode::Small   ? "small"
                  : mode == Mode::ByWrite ? "bywrite"
-                                        : "seeds",
+                                         : "seeds",
                  small_max_bytes >> 10, small_backed.load(std::memory_order_relaxed),
                  large_vram.load(std::memory_order_relaxed));
     if (mode == Mode::ByWrite) {

@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <fstream>
-#include <cstddef>
-#include <cstring>
 #include <algorithm>
-#include <vector>
-#include <chrono>
-#include <cstdlib>
-#include <ranges>
 #include <bit> // [CSSPLIT] has_single_bit / countr_zero
+#include <chrono>
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <ranges>
+#include <vector>
 
 #include "common/hash.h"
 #include "common/io_file.h"
@@ -365,10 +365,11 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .supports_shader_stencil_export = instance_.IsShaderStencilExportSupported(),
         // [Stage2 SPINGUARD] fold the flag into the Profile so the disk shader/pipeline cache
         // (profile.bin) invalidates when it toggles - PCACHE must miss/rebuild for a true A/B.
-        .spinguard = [] {
-            const char* e = std::getenv("SHADPS4_SPINGUARD");
-            return e && e[0] == '1';
-        }(),
+        .spinguard =
+            [] {
+                const char* e = std::getenv("SHADPS4_SPINGUARD");
+                return e && e[0] == '1';
+            }(),
     };
 
     // Seed the pipeline cache from disk. Compiling a level's worth of
@@ -466,8 +467,7 @@ PipelineCache::~PipelineCache() {
 // operator==, so the groups are addressed the same way - offsetof plus the field's size. Fields
 // that are already DYNAMIC (viewport, scissor, blend constants, stencil ref, depth bias) are not
 // part of the key at all and cannot appear here.
-static void AccountPipelineSwitch(const GraphicsPipelineKey& prev,
-                                  const GraphicsPipelineKey& cur) {
+static void AccountPipelineSwitch(const GraphicsPipelineKey& prev, const GraphicsPipelineKey& cur) {
     const auto* a = reinterpret_cast<const u8*>(&prev);
     const auto* b = reinterpret_cast<const u8*>(&cur);
     const auto differs = [a, b](size_t off, size_t len) {
@@ -868,10 +868,11 @@ PipelineCache::Result PipelineCache::GetProgram(Stage stage, LogicalStage l_stag
                                                : std::chrono::steady_clock::time_point{};
         const auto module = CompileModule(program->info, runtime_info, params.code, 0, binding);
         if (Parserprof::Enabled()) {
-            Parserprof::g_prof_pipe_us.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(
-                                                     std::chrono::steady_clock::now() - pp0)
-                                                     .count(),
-                                                 std::memory_order_relaxed);
+            Parserprof::g_prof_pipe_us.fetch_add(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - pp0)
+                    .count(),
+                std::memory_order_relaxed);
             Parserprof::g_compile_count.fetch_add(1, std::memory_order_relaxed);
         }
         if (stage == Stage::Compute) {
@@ -912,10 +913,11 @@ PipelineCache::Result PipelineCache::GetProgram(Stage stage, LogicalStage l_stag
                                                : std::chrono::steady_clock::time_point{};
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
         if (Parserprof::Enabled()) {
-            Parserprof::g_prof_pipe_us.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(
-                                                     std::chrono::steady_clock::now() - pp0)
-                                                     .count(),
-                                                 std::memory_order_relaxed);
+            Parserprof::g_prof_pipe_us.fetch_add(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - pp0)
+                    .count(),
+                std::memory_order_relaxed);
             Parserprof::g_compile_count.fetch_add(1, std::memory_order_relaxed);
             // [Stage1] SPECMISS: an already-cached pgm_hash recompiled at a new permutation
             // index - the "invisible field jumps" case (triple-compile of one hash).

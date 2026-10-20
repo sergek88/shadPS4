@@ -15,8 +15,8 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
-#include <queue>
 #include <unordered_map>
+#include <queue>
 
 namespace Platform {
 

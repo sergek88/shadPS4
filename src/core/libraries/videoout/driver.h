@@ -4,8 +4,8 @@
 #pragma once
 
 #include "common/debug.h"
-#include "common/postmortem.h"
 #include "common/polyfill_thread.h"
+#include "common/postmortem.h"
 #include "core/libraries/videoout/video_out.h"
 
 #include <condition_variable>

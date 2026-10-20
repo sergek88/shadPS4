@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstdlib>
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <boost/container/static_vector.hpp>
 
+#include "common/logging/log.h"
+#include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -15,8 +17,6 @@
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/ir/reinterpret.h"
 #include "shader_recompiler/profile.h"
-#include "common/logging/log.h"
-#include "core/emulator_settings.h"
 #include "video_core/amdgpu/resource.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 
@@ -498,7 +498,6 @@ SharpLocation TrackSharp(const IR::Inst* inst, const IR::Block& current_parent, 
     return SharpLocationFromSource(sources[0]);
 }
 
-
 IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const Info& info,
                                const AmdGpu::Buffer& buffer, u32 stride);
 
@@ -807,20 +806,18 @@ static bool TryPatchUnboundedBufferAccess(IR::Block& block, IR::Inst& inst, Info
             LOG_CRITICAL(Render_Recompiler,
                          "[SKINDIRECT] shader {:#x} block dword {} (sharp_idx={}) -> buffer "
                          "binding instead of BDA: base={:#x} stride={} records={} size={:#x}",
-                         info.pgm_hash, sd_word, sharp_idx,
-                         static_cast<u64>(buffer.base_address), static_cast<u32>(buffer.stride),
-                         static_cast<u32>(buffer.num_records), buffer.GetSize());
+                         info.pgm_hash, sd_word, sharp_idx, static_cast<u64>(buffer.base_address),
+                         static_cast<u32>(buffer.stride), static_cast<u32>(buffer.num_records),
+                         buffer.GetSize());
         }
         return false; // -> descriptors.Add(BufferResource{...}) in the caller
     }
     if (require_unbounded && buffer.num_records != std::numeric_limits<u32>::max()) {
         return false;
     }
-    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() ||
-        IsDmaMutedByBisect(info.pgm_hash)) {
+    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || IsDmaMutedByBisect(info.pgm_hash)) {
         LOG_WARNING(Render_Recompiler,
-                    "Unbounded V# sharp_idx={} but DMA disabled, keeping snapshot path",
-                    sharp_idx);
+                    "Unbounded V# sharp_idx={} but DMA disabled, keeping snapshot path", sharp_idx);
         return false;
     }
     if (buffer.swizzle_enable || buffer.add_tid_enable || (buffer.base_address & 3) != 0) {
@@ -834,8 +831,8 @@ static bool TryPatchUnboundedBufferAccess(IR::Block& block, IR::Inst& inst, Info
     bool is_float{};
     if (!DmaEligibleDwords(inst, num_dwords, is_float)) {
         LOG_WARNING(Render_Recompiler,
-                    "Unbounded V# sharp_idx={} used by opcode {}, keeping snapshot path",
-                    sharp_idx, inst.GetOpcode());
+                    "Unbounded V# sharp_idx={} used by opcode {}, keeping snapshot path", sharp_idx,
+                    inst.GetOpcode());
         return false;
     }
 
@@ -890,19 +887,20 @@ static bool TryPatchUnboundedBufferAccess(IR::Block& block, IR::Inst& inst, Info
                      "LIVEVEC4: shader {:#x} sharp_idx={} in-loop x4 load -> one live vec4",
                      info.pgm_hash, sharp_idx);
     } else
-    for (u32 i = 0; i < num_dwords; ++i) {
-        IR::U32 off = dword_offset;
-        if (i != 0) {
-            off = IR::U32{ir.IAdd(dword_offset, ir.Imm32(i))};
+        for (u32 i = 0; i < num_dwords; ++i) {
+            IR::U32 off = dword_offset;
+            if (i != 0) {
+                off = IR::U32{ir.IAdd(dword_offset, ir.Imm32(i))};
+            }
+            // Polling loops must observe memory writes made while the dispatch is
+            // executing — their loads stay volatile. Straight-line reads keep
+            // cacheable loads: volatile everywhere collapses PCIe throughput.
+            // Faults populate the page table; unmapped pages read as zero.
+            const u32 live_flag = poll_read ? Info::PollReadConstFlag : Info::LiveReadConstFlag;
+            const IR::U32 value =
+                ir.ReadConst(base, off, (in_loop && !sd_nonlive) ? live_flag : 0u);
+            dw[i] = is_float ? IR::Value{ir.BitCast<IR::F32>(value)} : IR::Value{value};
         }
-        // Polling loops must observe memory writes made while the dispatch is
-        // executing — their loads stay volatile. Straight-line reads keep
-        // cacheable loads: volatile everywhere collapses PCIe throughput.
-        // Faults populate the page table; unmapped pages read as zero.
-        const u32 live_flag = poll_read ? Info::PollReadConstFlag : Info::LiveReadConstFlag;
-        const IR::U32 value = ir.ReadConst(base, off, (in_loop && !sd_nonlive) ? live_flag : 0u);
-        dw[i] = is_float ? IR::Value{ir.BitCast<IR::F32>(value)} : IR::Value{value};
-    }
     switch (num_dwords) {
     case 1:
         inst.ReplaceUsesWith(dw[0]);
@@ -995,8 +993,8 @@ static const char* SkinDirectStoreShapeOdd(const AmdGpu::Buffer& buffer, const I
     if (inst.GetOpcode() == IR::Opcode::StoreBufferFormatF32) {
         const auto flags = inst.Flags<IR::BufferInstInfo>();
         const bool typed = flags.inst_data_fmt != AmdGpu::DataFormat::FormatInvalid;
-        const auto dfmt = typed ? AmdGpu::RemapDataFormat(flags.inst_data_fmt.Value())
-                                : buffer.GetDataFmt();
+        const auto dfmt =
+            typed ? AmdGpu::RemapDataFormat(flags.inst_data_fmt.Value()) : buffer.GetDataFmt();
         switch (dfmt) { // the dword-multiple set LIVESTORE-FMT accepts (below)
         case AmdGpu::DataFormat::Format32:
         case AmdGpu::DataFormat::Format32_32:
@@ -1070,16 +1068,14 @@ static bool SkinDirectStoreMatch(const Info& info, const IR::Inst& inst, IR::Ins
 // no one else can see. The original store is invalidated: this shader must
 // not claim the job pages with a buffer binding.
 static bool TryPatchLiveBufferStore(IR::Block& block, IR::Inst& inst, Info& info,
-                                    const AmdGpu::Buffer& buffer, IR::Inst* handle,
-                                    u32 sharp_idx) {
-    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() ||
-        IsDmaMutedByBisect(info.pgm_hash)) {
+                                    const AmdGpu::Buffer& buffer, IR::Inst* handle, u32 sharp_idx) {
+    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || IsDmaMutedByBisect(info.pgm_hash)) {
         return false;
     }
     if (buffer.swizzle_enable || buffer.add_tid_enable || (buffer.base_address & 3) != 0) {
         LOG_CRITICAL(Render_Recompiler,
-                    "Live store sharp_idx={} has swizzle/tid/unaligned base, keeping snapshot",
-                    sharp_idx);
+                     "Live store sharp_idx={} has swizzle/tid/unaligned base, keeping snapshot",
+                     sharp_idx);
         return false;
     }
     // [LIVESTORE-FMT] Typed stores (buffer_store_format_*) are lowered to raw dwords later by
@@ -1173,8 +1169,8 @@ static bool TryPatchLiveBufferStore(IR::Block& block, IR::Inst& inst, Info& info
             }
             break;
         case AmdGpu::DataFormat::Format8_8_8_8:
-            dwords.push_back(ir.Pack4x8(
-                num_format, ir.CompositeConstruct(comp(0), comp(1), comp(2), comp(3))));
+            dwords.push_back(
+                ir.Pack4x8(num_format, ir.CompositeConstruct(comp(0), comp(1), comp(2), comp(3))));
             break;
         case AmdGpu::DataFormat::Format16_16:
             dwords.push_back(ir.Pack2x16(num_format, ir.CompositeConstruct(comp(0), comp(1))));
@@ -1212,16 +1208,16 @@ static bool TryPatchLiveBufferStore(IR::Block& block, IR::Inst& inst, Info& info
                      "LIVEVEC4-STORE: shader {:#x} sharp_idx={} {} dwords -> one live vector store",
                      info.pgm_hash, sharp_idx, n);
     } else
-    for (u32 i = 0; i < dwords.size(); ++i) {
-        IR::U32 off = dword_offset;
-        if (i != 0) {
-            off = IR::U32{ir.IAdd(dword_offset, ir.Imm32(i))};
+        for (u32 i = 0; i < dwords.size(); ++i) {
+            IR::U32 off = dword_offset;
+            if (i != 0) {
+                off = IR::U32{ir.IAdd(dword_offset, ir.Imm32(i))};
+            }
+            ir.WriteConst(base, off, dwords[i], Info::LiveReadConstFlag);
         }
-        ir.WriteConst(base, off, dwords[i], Info::LiveReadConstFlag);
-    }
     inst.Invalidate();
-    LOG_INFO(Render_Recompiler, "Live store -> DMA: sharp_idx={}, base={:#x}, dwords={}",
-             sharp_idx, static_cast<u64>(buffer.base_address), dwords.size());
+    LOG_INFO(Render_Recompiler, "Live store -> DMA: sharp_idx={}, base={:#x}, dwords={}", sharp_idx,
+             static_cast<u64>(buffer.base_address), dwords.size());
     return true;
 }
 
@@ -1245,9 +1241,9 @@ void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors&
         raw[1] = handle->Arg(2).U32() | u64(handle->Arg(3).U32()) << 32;
         const auto buffer = std::bit_cast<AmdGpu::Buffer>(raw);
         LOG_INFO(Render_Recompiler,
-                 "PBS: op={}, inline=1, base={:#x}, num_records={:#x}, stride={}",
-                 inst.GetOpcode(), static_cast<u64>(buffer.base_address),
-                 static_cast<u32>(buffer.num_records), static_cast<u32>(buffer.stride));
+                 "PBS: op={}, inline=1, base={:#x}, num_records={:#x}, stride={}", inst.GetOpcode(),
+                 static_cast<u64>(buffer.base_address), static_cast<u32>(buffer.num_records),
+                 static_cast<u32>(buffer.stride));
         // Inline V# with base 0 and num_records 0xFFFFFFFF is the ND job
         // system's "all of memory" window: the guest address lives entirely
         // in the index/offset operands, so there is no PC-relative base to
@@ -1299,8 +1295,7 @@ void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors&
                              "-> bound WRITTEN SSBO instead of write_const_live: base={:#x} "
                              "stride={} records={} size={:#x} dfmt={} nfmt={} shape={}",
                              info.pgm_hash, sd_word, sharp_idx, inst.GetOpcode(),
-                             static_cast<u64>(buffer.base_address),
-                             static_cast<u32>(buffer.stride),
+                             static_cast<u64>(buffer.base_address), static_cast<u32>(buffer.stride),
                              static_cast<u32>(buffer.num_records), buffer.GetSize(),
                              static_cast<u32>(buffer.GetDataFmt()),
                              static_cast<u32>(buffer.GetNumberFmt()), odd ? odd : "ok");
@@ -1312,8 +1307,9 @@ void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors&
             if (LiveStoreEnabled()) {
                 static std::atomic<u32> ls_logged{0};
                 if (ls_logged.fetch_add(1, std::memory_order_relaxed) < 64) {
-                    LOG_CRITICAL(Render_Recompiler, "LIVESTORE: shader={:#x} store -> live BDA (op={})",
-                                 info.pgm_hash, inst.GetOpcode());
+                    LOG_CRITICAL(Render_Recompiler,
+                                 "LIVESTORE: shader={:#x} store -> live BDA (op={})", info.pgm_hash,
+                                 inst.GetOpcode());
                 }
             }
             return;
@@ -1323,13 +1319,14 @@ void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors&
         if (live_loop_load) {
             static std::atomic<u32> ll_logged{0};
             if (ll_logged.fetch_add(1, std::memory_order_relaxed) < 64) {
-                LOG_CRITICAL(Render_Recompiler, "LIVELOOP: shader={:#x} in-loop load -> live BDA (op={})",
+                LOG_CRITICAL(Render_Recompiler,
+                             "LIVELOOP: shader={:#x} in-loop load -> live BDA (op={})",
                              info.pgm_hash, inst.GetOpcode());
             }
         }
-        if (!sd_store &&
-            TryPatchUnboundedBufferAccess(block, inst, info, buffer, handle, sharp_idx,
-                                          /*require_unbounded=*/!(info.uses_live_dma || live_loop_load))) {
+        if (!sd_store && TryPatchUnboundedBufferAccess(
+                             block, inst, info, buffer, handle, sharp_idx,
+                             /*require_unbounded=*/!(info.uses_live_dma || live_loop_load))) {
             // The access now reads live guest memory through the BDA page
             // table; no buffer binding or snapshot copy is needed.
             return;
@@ -2192,8 +2189,9 @@ void ResourceTrackingPass(IR::Program& program, const Profile& profile) {
         const bool listed = std::find(allow.begin(), allow.end(), info.pgm_hash) != allow.end();
         if (loads_in_loop && (allow.empty() || listed)) {
             info.uses_live_dma = true;
-            LOG_CRITICAL(Render_Recompiler, "LIVELOOP2: shader {:#x} -> live DMA worker (loop loads{})",
-                         info.pgm_hash, listed ? ", listed" : "");
+            LOG_CRITICAL(Render_Recompiler,
+                         "LIVELOOP2: shader {:#x} -> live DMA worker (loop loads{})", info.pgm_hash,
+                         listed ? ", listed" : "");
         }
     }
     // Live-DMA store routing (uses_live_dma) is UMA-only and Compute-only, unchanged.
@@ -2215,8 +2213,8 @@ void ResourceTrackingPass(IR::Program& program, const Profile& profile) {
                 if (pre_buffer.base_address == 0 &&
                     pre_buffer.num_records == std::numeric_limits<u32>::max()) {
                     info.uses_live_dma = true;
-                    LOG_INFO(Render_Recompiler,
-                             "Shader {:#x}: live DMA mode (job-system worker)", info.pgm_hash);
+                    LOG_INFO(Render_Recompiler, "Shader {:#x}: live DMA mode (job-system worker)",
+                             info.pgm_hash);
                     break;
                 }
             }

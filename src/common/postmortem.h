@@ -93,23 +93,23 @@ inline bool Enabled() {
     }();
     return on;
 }
-inline std::atomic<u64> g_prof_pipe_us{0};    // total compile-path time on a permutation miss
-inline std::atomic<u64> g_compile_count{0};   // number of shader-permutation compiles
-inline std::atomic<u64> g_specmiss_count{0};  // recompiles of an already-cached pgm_hash
+inline std::atomic<u64> g_prof_pipe_us{0};   // total compile-path time on a permutation miss
+inline std::atomic<u64> g_compile_count{0};  // number of shader-permutation compiles
+inline std::atomic<u64> g_specmiss_count{0}; // recompiles of an already-cached pgm_hash
 
 // [Stage1b] Per-packet wall time of the parser loop: the fatal EOP gap was not
 // covered by any TEXTIME/compile bucket, so attribute it at the source. Buckets
 // by opcode class + the single worst packet ever seen.
-inline std::atomic<u64> g_pkt_draw_us{0};     // draws + dispatches (rasterizer work)
-inline std::atomic<u64> g_pkt_wrm_us{0};      // WaitRegMem polls
-inline std::atomic<u64> g_pkt_evw_us{0};      // EventWrite* (EOP/EOS paths)
-inline std::atomic<u64> g_pkt_dma_us{0};      // DmaData
-inline std::atomic<u64> g_pkt_other_us{0};    // everything else
-inline std::atomic<u64> g_pkt_max_us{0};      // worst single packet
-inline std::atomic<u32> g_pkt_max_op{0};      // its opcode
-inline std::atomic<u64> g_evw_dl_us{0};   // ProcessDownloadImages inside EventWrite*
-inline std::atomic<u64> g_evw_fin_us{0};  // rasterizer->Finish() on EOS GdsStore
-inline std::atomic<u64> g_fb_wait_us{0};  // fault-buffer area wait (scheduler.Wait)
+inline std::atomic<u64> g_pkt_draw_us{0};  // draws + dispatches (rasterizer work)
+inline std::atomic<u64> g_pkt_wrm_us{0};   // WaitRegMem polls
+inline std::atomic<u64> g_pkt_evw_us{0};   // EventWrite* (EOP/EOS paths)
+inline std::atomic<u64> g_pkt_dma_us{0};   // DmaData
+inline std::atomic<u64> g_pkt_other_us{0}; // everything else
+inline std::atomic<u64> g_pkt_max_us{0};   // worst single packet
+inline std::atomic<u32> g_pkt_max_op{0};   // its opcode
+inline std::atomic<u64> g_evw_dl_us{0};    // ProcessDownloadImages inside EventWrite*
+inline std::atomic<u64> g_evw_fin_us{0};   // rasterizer->Finish() on EOS GdsStore
+inline std::atomic<u64> g_fb_wait_us{0};   // fault-buffer area wait (scheduler.Wait)
 // [A-EOPONLY] download-drain call shares by drain site, to measure the EOS fraction
 // before deciding the expected win, and to count EOS drains skipped under EOPONLY.
 inline std::atomic<u64> g_dl_eos_calls{0}, g_dl_eop_calls{0}, g_dl_eos_skipped{0};
@@ -172,19 +172,19 @@ enum PktPhase : u32 {
     // it: compare with pre-W0 windows as desc + dma.
     PhDma,
     // Breakdown of what used to be one `vk` bucket. The remainder stays in PhVk.
-    PhBind,        // vkCmdBindPipeline + dynamic state
-    PhRp,          // BeginRendering/EndRendering, incl. any render-pass rebuild
-    PhBarr,        // pipeline->BindResources: descriptor writes + vkCmdPipelineBarrier
-    PhDraw,        // the vkCmdDraw*/vkCmdDispatch call itself
-    PhSched,       // scheduler Flush / command-buffer turnover
-    PhOther,       // remainder of the packet (decode, regs, everything unprobed)
+    PhBind,  // vkCmdBindPipeline + dynamic state
+    PhRp,    // BeginRendering/EndRendering, incl. any render-pass rebuild
+    PhBarr,  // pipeline->BindResources: descriptor writes + vkCmdPipelineBarrier
+    PhDraw,  // the vkCmdDraw*/vkCmdDispatch call itself
+    PhSched, // scheduler Flush / command-buffer turnover
+    PhOther, // remainder of the packet (decode, regs, everything unprobed)
     PhCount,
 };
 // [HOSTSTALL-PKT] What the gfx parser is chewing on right now. PktTimer publishes it; the
 // watchdog reads it to turn "heartbeat stopped" into "stuck in opcode X for N ms".
 inline std::atomic<u32> g_cur_op{0};
 inline std::atomic<u64> g_cur_seq{0};
-inline std::atomic<s64> g_cur_pkt_us{0};   // packet start, microseconds (0 = not in a packet)
+inline std::atomic<s64> g_cur_pkt_us{0}; // packet start, microseconds (0 = not in a packet)
 inline std::atomic<u32> g_cur_phase{PhOther};
 inline std::atomic<s64> g_cur_phase_us{0}; // when the current phase was entered
 
@@ -210,7 +210,7 @@ inline std::atomic<u64> g_ws_total_bufs{0};
 inline std::atomic<u64> g_ws_total_bytes{0};
 inline std::atomic<u64> g_ws_written_bufs{0};
 inline std::atomic<u64> g_ws_written_bytes{0};
-inline std::atomic<u64> g_ws_late_bufs{0};   // still written after the load phase
+inline std::atomic<u64> g_ws_late_bufs{0}; // still written after the load phase
 inline std::atomic<u64> g_ws_late_bytes{0};
 
 // [TOUCHSTAT] What the GPU actually reaches for, per frame, split by binding direction.
@@ -268,16 +268,16 @@ inline std::atomic<u64> g_pipe_unique{0};
 // [RPSTAT/BARSTAT/BINDSTAT/DESCSTAT] Why state changes cost 9x more than the draws themselves.
 // All plain relaxed counters on paths that already run; they answer "how many", which a
 // microsecond total cannot.
-inline std::atomic<u64> g_rp_calls{0};      // scheduler.BeginRendering called
-inline std::atomic<u64> g_rp_starts{0};     // ...and actually began a pass (state differed)
-inline std::atomic<u64> g_rp_attach{0};     // ...with a different attachment SET
-inline std::atomic<u64> g_rp_ends{0};       // EndRendering that closed a live pass
-inline std::atomic<u64> g_bar_calls{0};     // BindResources invocations that carried barriers
-inline std::atomic<u64> g_bar_buffers{0};   // buffer barriers submitted
-inline std::atomic<u64> g_bind_calls{0};    // vkCmdBindPipeline issued
-inline std::atomic<u64> g_bind_real{0};     // ...where the pipeline actually differed
-inline std::atomic<u64> g_desc_writes{0};   // descriptor writes handed to the driver
-inline std::atomic<u64> g_desc_redundant{0};// ...identical to what that slot already held
+inline std::atomic<u64> g_rp_calls{0};       // scheduler.BeginRendering called
+inline std::atomic<u64> g_rp_starts{0};      // ...and actually began a pass (state differed)
+inline std::atomic<u64> g_rp_attach{0};      // ...with a different attachment SET
+inline std::atomic<u64> g_rp_ends{0};        // EndRendering that closed a live pass
+inline std::atomic<u64> g_bar_calls{0};      // BindResources invocations that carried barriers
+inline std::atomic<u64> g_bar_buffers{0};    // buffer barriers submitted
+inline std::atomic<u64> g_bind_calls{0};     // vkCmdBindPipeline issued
+inline std::atomic<u64> g_bind_real{0};      // ...where the pipeline actually differed
+inline std::atomic<u64> g_desc_writes{0};    // descriptor writes handed to the driver
+inline std::atomic<u64> g_desc_redundant{0}; // ...identical to what that slot already held
 inline std::atomic<u64> g_frames_counted{0};
 
 // [PKTHIST] Draw-class packet duration distribution over the 5s window. Hitches live in the
@@ -307,22 +307,38 @@ inline void PhaseSwitch(u32 next) {
 
 inline const char* PhaseName(u32 p) {
     switch (p) {
-    case PhCompile: return "compile";
-    case PhTex: return "tex";
-    case PhBuf: return "buf";
-    case PhDesc: return "desc";
-    case PhVk: return "vk";
-    case PhDrain: return "drain";
-    case PhSignal: return "signal";
-    case PhFlip: return "flip";
-    case PhHash: return "hash";
-    case PhDma: return "dma";
-    case PhBind: return "bind";
-    case PhRp: return "rp";
-    case PhBarr: return "barr";
-    case PhDraw: return "draw";
-    case PhSched: return "sched";
-    default: return "other";
+    case PhCompile:
+        return "compile";
+    case PhTex:
+        return "tex";
+    case PhBuf:
+        return "buf";
+    case PhDesc:
+        return "desc";
+    case PhVk:
+        return "vk";
+    case PhDrain:
+        return "drain";
+    case PhSignal:
+        return "signal";
+    case PhFlip:
+        return "flip";
+    case PhHash:
+        return "hash";
+    case PhDma:
+        return "dma";
+    case PhBind:
+        return "bind";
+    case PhRp:
+        return "rp";
+    case PhBarr:
+        return "barr";
+    case PhDraw:
+        return "draw";
+    case PhSched:
+        return "sched";
+    default:
+        return "other";
     }
 }
 
@@ -347,8 +363,16 @@ struct PhaseProbe {
 
 inline bool IsDrawClassOp(u32 op) {
     switch (op) {
-    case 0x15: case 0x16: case 0x24: case 0x25: case 0x27:
-    case 0x2C: case 0x2D: case 0x30: case 0x35: case 0x38:
+    case 0x15:
+    case 0x16:
+    case 0x24:
+    case 0x25:
+    case 0x27:
+    case 0x2C:
+    case 0x2D:
+    case 0x30:
+    case 0x35:
+    case 0x38:
         return true;
     default:
         return false;
@@ -381,18 +405,19 @@ inline s64 NowNs() {
 }
 inline std::atomic<u32> g_parser_tid{0}; // host tid of GpuCommandProcessor (page_manager compares)
 // Round-robin in Liverpool::Process.
-inline std::atomic<u64> g_fc_gfx_resume_ns{0};    // GFX coroutine running (all packets, waits incl.)
-inline std::atomic<u64> g_fc_asc_resume_ns{0};    // ASC coroutine running and advancing a packet
-inline std::atomic<u64> g_fc_asc_resumes{0};      // all ASC resumes
+inline std::atomic<u64> g_fc_gfx_resume_ns{0}; // GFX coroutine running (all packets, waits incl.)
+inline std::atomic<u64> g_fc_asc_resume_ns{0}; // ASC coroutine running and advancing a packet
+inline std::atomic<u64> g_fc_asc_resumes{0};   // all ASC resumes
 inline std::atomic<u64> g_fc_asc_spin_resumes{0}; // ...that yielded again without a new packet
 inline std::atomic<u64> g_fc_asc_spin_ns{0};      // wall of those spin resumes
 inline std::atomic<u64> g_fc_asc_pkts{0};         // type-3 ASC packets processed
 inline std::atomic<u64> g_fc_asc_dispatches{0};   // ASC dispatches handed to the rasterizer
 inline std::atomic<u64> g_fc_asc_kick_lat_ns{0};  // SubmitAsc into an idle queue -> first resume
 inline std::atomic<u64> g_fc_asc_kick_n{0};
-inline std::atomic<u64> g_fc_gfx_empty_iters{0};  // GFX polled with nothing queued while submits pend
-inline std::atomic<u64> g_fc_loop_iters{0};       // round-robin iterations (queue polls)
-inline std::atomic<u64> g_fc_loop_ns{0};          // wall inside the round-robin loop
+inline std::atomic<u64> g_fc_gfx_empty_iters{
+    0};                                     // GFX polled with nothing queued while submits pend
+inline std::atomic<u64> g_fc_loop_iters{0}; // round-robin iterations (queue polls)
+inline std::atomic<u64> g_fc_loop_ns{0};    // wall inside the round-robin loop
 // Per ASC queue: the guest's kick stamp (SubmitAsc writes it when the queue was empty, the
 // task's first resume consumes it), a packet sequence for the spin detector, and the time the
 // queue spent suspended inside WaitRegMem (mirror of g_wrm_wait_us; wall, not CPU).
@@ -402,18 +427,24 @@ inline std::atomic<u64> g_fc_asc_pkt_seq[kFcAscQueues]{};
 inline std::atomic<u64> g_asc_wait_ns[kFcAscQueues]{};
 // submit_done boundary and the handlers that run on the parser outside any task.
 inline std::atomic<u64> g_fc_onsubmit_ns{0};
-inline std::atomic<u64> g_fc_os_step_ns[8]{}; // 0 prof 1 prefetch 2 label 3 fault 4 dlimg 5 texgc 6 bufgc
+inline std::atomic<u64>
+    g_fc_os_step_ns[8]{}; // 0 prof 1 prefetch 2 label 3 fault 4 dlimg 5 texgc 6 bufgc
 inline std::atomic<u64> g_fc_flush_ns{0}, g_fc_flush_n{0};
-inline std::atomic<u64> g_fc_flip_ns{0}, g_fc_flip_n{0};           // Signal(GfxFlip) from the retire loop
-inline std::atomic<u64> g_fc_flip_task_ns{0}, g_fc_flip_task_n{0}; // ...from inside the GFX task (EOP, DCB end)
-inline std::atomic<u64> g_fc_gpuidle_ns{0}, g_fc_gpuidle_n{0};     // Signal(GpuIdle) handler
-inline std::atomic<u64> g_fc_cmd_ns{0}, g_fc_cmd_n{0};             // ProcessCommands callbacks from the loop
-inline std::atomic<u64> g_fc_cmd_task_ns{0}, g_fc_cmd_task_n{0};   // ...from inside a task (inside resume time)
-inline std::atomic<u64> g_fc_frame_wait_ns{0}, g_fc_frame_wait_n{0}; // presenter GetRenderFrame waits
+inline std::atomic<u64> g_fc_flip_ns{0}, g_fc_flip_n{0}; // Signal(GfxFlip) from the retire loop
+inline std::atomic<u64> g_fc_flip_task_ns{0},
+    g_fc_flip_task_n{0}; // ...from inside the GFX task (EOP, DCB end)
+inline std::atomic<u64> g_fc_gpuidle_ns{0}, g_fc_gpuidle_n{0}; // Signal(GpuIdle) handler
+inline std::atomic<u64> g_fc_cmd_ns{0}, g_fc_cmd_n{0}; // ProcessCommands callbacks from the loop
+inline std::atomic<u64> g_fc_cmd_task_ns{0},
+    g_fc_cmd_task_n{0}; // ...from inside a task (inside resume time)
+inline std::atomic<u64> g_fc_frame_wait_ns{0},
+    g_fc_frame_wait_n{0}; // presenter GetRenderFrame waits
 // Guest half of the lock-step: how long after the parser drained did the next GFX submit come.
-inline std::atomic<s64> g_fc_gpuidle_stamp_ns{0}; // a stamp, never zeroed; the guest reads it relaxed
-inline std::atomic<u64> g_fc_gpuidle_seq{0};      // bumped with the stamp: the guest counts each drain once
-inline std::atomic<u64> g_fc_idle_seq_seen{0};    // guest side: last drain already accounted
+inline std::atomic<s64> g_fc_gpuidle_stamp_ns{
+    0}; // a stamp, never zeroed; the guest reads it relaxed
+inline std::atomic<u64> g_fc_gpuidle_seq{
+    0}; // bumped with the stamp: the guest counts each drain once
+inline std::atomic<u64> g_fc_idle_seq_seen{0}; // guest side: last drain already accounted
 inline std::atomic<u64> g_fc_idle_to_submit_ns{0}, g_fc_idle_to_submit_n{0};
 // Guest timers (gnmdriver.cpp: sceGnmSubmitDone / SubmitCommandBuffersForWorkload / DingDong).
 // Ungated by design - 2 NowUs per call at 1-3 calls per frame - and therefore in microseconds.
@@ -421,7 +452,8 @@ inline std::atomic<u64> g_fc_guest_sd_wait_us{0}, g_fc_guest_sd_interval_us{0}, 
     g_fc_guest_submit_wait_us{0}, g_fc_guest_submit_n{0}, g_fc_guest_dd_wait_us{0},
     g_fc_guest_dd_n{0};
 // Small items sized before anyone optimises them (measures #5 and #10).
-inline std::atomic<u64> g_fc_pop_ns{0}, g_fc_pop_n{0};     // scheduler.PopPendingOperations per draw/dispatch
+inline std::atomic<u64> g_fc_pop_ns{0},
+    g_fc_pop_n{0}; // scheduler.PopPendingOperations per draw/dispatch
 inline std::atomic<u64> g_fc_clamp_ns{0}, g_fc_clamp_n{0}; // ClampRangeSize for V# >= 1 GiB
 // Faults / VirtualProtect served on the parser thread itself (page_manager.cpp).
 inline std::atomic<u64> g_fc_parser_faults{0}, g_fc_parser_protects{0};
@@ -433,8 +465,8 @@ inline std::atomic<u64> g_pkt_asc_us{0}, g_pkt_asc_n{0};
 inline std::atomic<u64> g_pkt_asc_wait_us{0}, g_pkt_asc_wait_n{0};
 inline std::atomic<u64> g_ph_win_asc_us[PhCount]{}; // phase sums of ASC dispatches (us)
 // (t_pkt_asc lives next to t_ph_active above - PhaseSwitch reads it.)
-inline thread_local bool t_fc_in_task = false;      // inside task.resume() (ProcessCommands attribution)
-inline std::atomic<u64> g_slow_asc_lines{0};        // SLOWPKT-ASC cap (16 per run)
+inline thread_local bool t_fc_in_task = false; // inside task.resume() (ProcessCommands attribution)
+inline std::atomic<u64> g_slow_asc_lines{0};   // SLOWPKT-ASC cap (16 per run)
 // DMA block of BindResources.
 inline std::atomic<u64> g_dma_sweeps{0};    // full mapped-range sweeps (once per flip)
 inline std::atomic<u64> g_dma_zone_runs{0}; // DMASYNC_ZONE range syncs (per DMA dispatch)
@@ -472,8 +504,8 @@ inline std::atomic<u64> g_wrm_addr{0};
 inline std::atomic<u32> g_wrm_func{0};
 inline std::atomic<u32> g_wrm_ref{0};
 inline std::atomic<u32> g_wrm_mask{0};
-inline std::atomic<u32> g_wrm_cur{0};     // refreshed on every resume - safe for the handler,
-                                          // which must not touch guest memory itself
+inline std::atomic<u32> g_wrm_cur{0}; // refreshed on every resume - safe for the handler,
+                                      // which must not touch guest memory itself
 inline std::atomic<s64> g_wrm_since_ms{0};
 // Last 8 processed GFX packets: [op:8][seq:32][start-ms low 24 bits]. Own monotonic seq (the
 // RINGSENSE one is env-gated). Pushed at packet start so the packet being processed at death
@@ -636,9 +668,9 @@ inline std::atomic<u64> g_present_queued{0}; // requests sitting in the present 
 
 // [GUESTSTALL-GPU] Submission accounting mirrors. All are plain relaxed stores on paths that
 // already existed; the watchdog only loads them.
-inline std::atomic<u32> g_submission_lock{0};   // gnmdriver's submitDone gate (a FLAG, not a count)
-inline std::atomic<u64> g_submits_in{0};        // rings handed to the parser
-inline std::atomic<u64> g_submits_done{0};      // rings the parser retired
+inline std::atomic<u32> g_submission_lock{0}; // gnmdriver's submitDone gate (a FLAG, not a count)
+inline std::atomic<u64> g_submits_in{0};      // rings handed to the parser
+inline std::atomic<u64> g_submits_done{0};    // rings the parser retired
 inline std::atomic<s64> g_last_retire_ms{0};
 inline std::atomic<u64> g_num_gfx_submits{0};
 inline std::atomic<u64> g_num_asc_submits{0};
@@ -654,7 +686,7 @@ inline std::atomic<u64> g_sub_dec[kSubSites]{};
 
 // [STARTUP] Cost of the phases that run before the first frame, so a black screen before the
 // Sony logo is attributable instead of guessed at.
-inline std::atomic<s64> g_startup_ms{0};        // first stamp taken, used as t0
+inline std::atomic<s64> g_startup_ms{0}; // first stamp taken, used as t0
 inline std::atomic<u64> g_startup_backimp_ms{0};
 inline std::atomic<u64> g_startup_pcache_ms{0};
 
@@ -724,10 +756,10 @@ inline std::atomic<u64> g_buf_labelint_us{0};
 inline std::atomic<u64> g_stream_hist[4]{};
 // [CONSTCACHE] Memoised stream copies.
 inline std::atomic<u64> g_constcache_clears{0};       // cache flushes, any reason
-inline std::atomic<u64> g_constcache_clear_frame{0}; // ...because the frame changed
-inline std::atomic<u64> g_constcache_clear_wrap{0};  // ...because the ring wrapped
-inline std::atomic<u64> g_constcache_cpumod{0};      // entry dropped: guest rewrote the source
-inline std::atomic<u64> g_constcache_wrap_in_copy{0};// ring wrapped inside our own Copy
+inline std::atomic<u64> g_constcache_clear_frame{0};  // ...because the frame changed
+inline std::atomic<u64> g_constcache_clear_wrap{0};   // ...because the ring wrapped
+inline std::atomic<u64> g_constcache_cpumod{0};       // entry dropped: guest rewrote the source
+inline std::atomic<u64> g_constcache_wrap_in_copy{0}; // ring wrapped inside our own Copy
 inline std::atomic<u64> g_constcache_hits{0};
 inline std::atomic<u64> g_constcache_misses{0};
 inline std::atomic<u64> g_constcache_saved_us{0};
@@ -818,8 +850,7 @@ inline std::atomic<u64> g_res_vram_mb{0};
 struct UsTimer {
     std::atomic<u64>* sink;
     std::chrono::steady_clock::time_point t0;
-    explicit UsTimer(std::atomic<u64>& s)
-        : sink{&s}, t0{std::chrono::steady_clock::now()} {}
+    explicit UsTimer(std::atomic<u64>& s) : sink{&s}, t0{std::chrono::steady_clock::now()} {}
     UsTimer(const UsTimer&) = delete;
     UsTimer& operator=(const UsTimer&) = delete;
     ~UsTimer() {

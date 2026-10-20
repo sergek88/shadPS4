@@ -3,8 +3,8 @@
 
 #include <array>
 #include <atomic>
-#include "common/logging/log.h"
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 

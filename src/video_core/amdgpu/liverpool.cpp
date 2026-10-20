@@ -9,12 +9,12 @@
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/polyfill_thread.h"
+#include "common/postmortem.h"
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/videoout/driver.h"
-#include "common/postmortem.h"
 #include "core/memory.h"
 #include "core/platform.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -38,20 +38,19 @@ typedef struct _FILETIME {
 #endif
 extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
 extern "C" __declspec(dllimport) void* __stdcall GetCurrentThread(void);
-extern "C" __declspec(dllimport) int __stdcall GetThreadTimes(void* thread,
-                                                              _FILETIME* creation_time,
-                                                              _FILETIME* exit_time,
-                                                              _FILETIME* kernel_time,
-                                                              _FILETIME* user_time);
+extern "C"
+    __declspec(dllimport) int __stdcall GetThreadTimes(void* thread, _FILETIME* creation_time,
+                                                       _FILETIME* exit_time, _FILETIME* kernel_time,
+                                                       _FILETIME* user_time);
 
 extern "C" __declspec(dllimport) int __stdcall QueryThreadCycleTime(void* thread,
-                                                                 unsigned long long* cycles);
+                                                                    unsigned long long* cycles);
 #endif
 
 namespace Vulkan {
 extern bool g_cs_sync_pending; // [CSBARRIER] defined in vk_rasterizer.cpp
 extern u32 g_cs_sync_mask;     // [CSBARRIER] 1 ACQUIRE_MEM, 2 WAIT_REG_MEM, 4 EVENT_WRITE
-}
+} // namespace Vulkan
 
 namespace Vulkan {
 extern std::atomic<u32> g_dbg_draws;
@@ -79,7 +78,6 @@ static int EopRetireLevel() {
 static bool EopRetire() {
     return EopRetireLevel() != 0;
 }
-
 
 static const char* dcb_task_name{"DCB_TASK"};
 static const char* ccb_task_name{"CCB_TASK"};
@@ -269,9 +267,8 @@ struct PktTimer {
                          op, total, ph[Parserprof::PhCompile], ph[Parserprof::PhTex],
                          ph[Parserprof::PhBuf], ph[Parserprof::PhDesc], ph[Parserprof::PhDma],
                          ph[Parserprof::PhVk], ph[Parserprof::PhOther], ph[Parserprof::PhBind],
-                         ph[Parserprof::PhRp], ph[Parserprof::PhBarr],
-                         Parserprof::t_pkt_barriers, Parserprof::t_pkt_writes,
-                         ph[Parserprof::PhDraw], ph[Parserprof::PhSched],
+                         ph[Parserprof::PhRp], ph[Parserprof::PhBarr], Parserprof::t_pkt_barriers,
+                         Parserprof::t_pkt_writes, ph[Parserprof::PhDraw], ph[Parserprof::PhSched],
                          Parserprof::t_pkt_binds);
             return;
         }
@@ -279,11 +276,11 @@ struct PktTimer {
             for (u32 i = 0; i < Parserprof::PhCount; ++i) {
                 Parserprof::g_ph_win_us[i].fetch_add(ph[i], std::memory_order_relaxed);
             }
-            const u32 bucket = total < 100      ? 0
-                               : total < 1000   ? 1
-                               : total < 5000   ? 2
-                               : total < 20000  ? 3
-                                                : 4;
+            const u32 bucket = total < 100     ? 0
+                               : total < 1000  ? 1
+                               : total < 5000  ? 2
+                               : total < 20000 ? 3
+                                               : 4;
             Parserprof::g_pkt_hist[bucket].fetch_add(1, std::memory_order_relaxed);
         } else if (op == 0x47) {
             // [FRAMECHAIN] The EOP-only buckets: nothing else feeds them, so without this the
@@ -314,8 +311,7 @@ struct PktTimer {
                          ph[Parserprof::PhFlip],
                          ph[Parserprof::PhOther] + ph[Parserprof::PhCompile] +
                              ph[Parserprof::PhTex] + ph[Parserprof::PhBuf] +
-                             ph[Parserprof::PhDesc] + ph[Parserprof::PhDma] +
-                             ph[Parserprof::PhVk],
+                             ph[Parserprof::PhDesc] + ph[Parserprof::PhDma] + ph[Parserprof::PhVk],
                          seq);
         } else {
             LOG_CRITICAL(Render,
@@ -327,10 +323,9 @@ struct PktTimer {
                          ph[Parserprof::PhVk],
                          ph[Parserprof::PhOther] + ph[Parserprof::PhDrain] +
                              ph[Parserprof::PhSignal] + ph[Parserprof::PhFlip],
-                         seq, ph[Parserprof::PhBind], ph[Parserprof::PhRp],
-                         ph[Parserprof::PhBarr], Parserprof::t_pkt_barriers,
-                         Parserprof::t_pkt_writes, ph[Parserprof::PhDraw],
-                         ph[Parserprof::PhSched], Parserprof::t_pkt_binds);
+                         seq, ph[Parserprof::PhBind], ph[Parserprof::PhRp], ph[Parserprof::PhBarr],
+                         Parserprof::t_pkt_barriers, Parserprof::t_pkt_writes,
+                         ph[Parserprof::PhDraw], ph[Parserprof::PhSched], Parserprof::t_pkt_binds);
         }
     }
 };
@@ -368,8 +363,8 @@ void Liverpool::ProcessCommands() {
         const bool fc_on = Parserprof::Enabled();
         const bool fc_task = fc_on && Parserprof::t_fc_in_task;
         {
-            Parserprof::FcTimer fc_t{fc_task ? Parserprof::g_fc_cmd_task_ns : Parserprof::g_fc_cmd_ns,
-                                     fc_on};
+            Parserprof::FcTimer fc_t{
+                fc_task ? Parserprof::g_fc_cmd_task_ns : Parserprof::g_fc_cmd_ns, fc_on};
             callback();
         }
         if (fc_on) {
@@ -472,8 +467,7 @@ void Liverpool::Process(std::stop_token stoken) {
                     std::memory_order_relaxed);
                 fc_seg_t0 = fc_t0;
                 Parserprof::g_fc_loop_iters.fetch_add(fc_iters, std::memory_order_relaxed);
-                Parserprof::g_fc_gfx_empty_iters.fetch_add(fc_gfx_empty,
-                                                           std::memory_order_relaxed);
+                Parserprof::g_fc_gfx_empty_iters.fetch_add(fc_gfx_empty, std::memory_order_relaxed);
                 fc_iters = 0;
                 fc_gfx_empty = 0;
                 if (fc_asc && fc_vq < Parserprof::kFcAscQueues) {
@@ -492,10 +486,9 @@ void Liverpool::Process(std::stop_token stoken) {
                     Parserprof::g_fc_asc_resumes.fetch_add(1, std::memory_order_relaxed);
                     // A task that ran to completion advanced by definition: its last packet
                     // may have been the wait it woke up in, with no new packet to bump seq.
-                    const bool advanced =
-                        task.done() || fc_vq >= Parserprof::kFcAscQueues ||
-                        Parserprof::g_fc_asc_pkt_seq[fc_vq].load(std::memory_order_relaxed) !=
-                            fc_seq0;
+                    const bool advanced = task.done() || fc_vq >= Parserprof::kFcAscQueues ||
+                                          Parserprof::g_fc_asc_pkt_seq[fc_vq].load(
+                                              std::memory_order_relaxed) != fc_seq0;
                     if (advanced) {
                         Parserprof::g_fc_asc_resume_ns.fetch_add(fc_dt, std::memory_order_relaxed);
                     } else {
@@ -567,8 +560,7 @@ void Liverpool::Process(std::stop_token stoken) {
                         static const u32 s_ae2 =
                             s_ae_env2 ? (u32)std::strtoul(s_ae_env2, nullptr, 10) : 0;
                         if (s_ae2 && (f % s_ae2) == 0) {
-                            VideoCore::RequestScreenshot(
-                                VideoCore::ScreenshotRequest::GameOnly);
+                            VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
                         }
                         if ((f % 100) == 0) {
                             const u32 d = Vulkan::g_dbg_draws.exchange(0);
@@ -1190,7 +1182,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             case PM4ItOpcode::EventWrite: {
                 const auto* event = reinterpret_cast<const PM4CmdEventWrite*>(header);
                 if (Vulkan::g_cs_sync_mask & 4u) {
-                    Vulkan::g_cs_sync_pending = true; // [CSBARRIER] game sync (e.g. CS_PARTIAL_FLUSH)
+                    Vulkan::g_cs_sync_pending =
+                        true; // [CSBARRIER] game sync (e.g. CS_PARTIAL_FLUSH)
                 }
                 LOG_DEBUG(Render, "Encountered EventWrite: event_type = {}, event_index = {}",
                           magic_enum::enum_name(event->event_type.Value()),
@@ -1216,12 +1209,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 const auto* event_eos = reinterpret_cast<const PM4CmdEventWriteEos*>(header);
                 if (rasterizer) {
                     rasterizer->FlushSkinBatch(Vulkan::SkinBatch::Reason::Label); // [CSBATCH]
-                    const s64 dl_t0 =
-                        Parserprof::Enabled()
-                            ? std::chrono::duration_cast<std::chrono::microseconds>(
-                                  std::chrono::steady_clock::now().time_since_epoch())
-                                  .count()
-                            : 0;
+                    const s64 dl_t0 = Parserprof::Enabled()
+                                          ? std::chrono::duration_cast<std::chrono::microseconds>(
+                                                std::chrono::steady_clock::now().time_since_epoch())
+                                                .count()
+                                          : 0;
                     // [A-EOPONLY] SHADPS4_DLIMG_EOPONLY=1 skips the EOS-site drain WITHOUT
                     // clearing the queue: the set dedups, images ride to the next EOP/ReleaseMem
                     // drain. EOP and ReleaseMem sites are untouched.
@@ -1236,12 +1228,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         Parserprof::g_dl_eos_skipped.fetch_add(1, std::memory_order_relaxed);
                     }
                     if (dl_t0 != 0) {
-                        const s64 dl_now =
-                            std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count();
+                        const s64 dl_now = std::chrono::duration_cast<std::chrono::microseconds>(
+                                               std::chrono::steady_clock::now().time_since_epoch())
+                                               .count();
                         Parserprof::g_evw_dl_us.fetch_add(static_cast<u64>(dl_now - dl_t0),
-                                                 std::memory_order_relaxed);
+                                                          std::memory_order_relaxed);
                     }
                 }
                 event_eos->SignalFence([](void* address, u64 data, u32 num_bytes) {
@@ -1253,21 +1244,21 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (event_eos->command == PM4CmdEventWriteEos::Command::GdsStore) {
                     ASSERT(event_eos->size == 1);
                     if (rasterizer) {
-                    const s64 fin_t0 =
-                        Parserprof::Enabled()
-                            ? std::chrono::duration_cast<std::chrono::microseconds>(
-                                  std::chrono::steady_clock::now().time_since_epoch())
-                                  .count()
-                            : 0;
+                        const s64 fin_t0 =
+                            Parserprof::Enabled()
+                                ? std::chrono::duration_cast<std::chrono::microseconds>(
+                                      std::chrono::steady_clock::now().time_since_epoch())
+                                      .count()
+                                : 0;
                         rasterizer->Finish();
-                    if (fin_t0 != 0) {
-                        const s64 fin_now =
-                            std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count();
-                        Parserprof::g_evw_fin_us.fetch_add(static_cast<u64>(fin_now - fin_t0),
-                                                 std::memory_order_relaxed);
-                    }
+                        if (fin_t0 != 0) {
+                            const s64 fin_now =
+                                std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+                            Parserprof::g_evw_fin_us.fetch_add(static_cast<u64>(fin_now - fin_t0),
+                                                               std::memory_order_relaxed);
+                        }
 
                         const u32 value = rasterizer->ReadDataFromGds(event_eos->gds_index);
                         *event_eos->Address() = value;
@@ -1283,8 +1274,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 static const bool s_trace_fence = std::getenv("SHADPS4_TRACEFENCE") != nullptr;
                 if (s_trace_fence) {
                     LOG_CRITICAL(Render, "EOPW addr={:#x} val={:#x}",
-                                reinterpret_cast<u64>(event_eop->Address<void*>()),
-                                event_eop->DataQWord());
+                                 reinterpret_cast<u64>(event_eop->Address<void*>()),
+                                 event_eop->DataQWord());
                 }
                 if (rasterizer) {
                     // [MINGAP] SHADPS4_DLIMG_MINGAP_MS=N: drain no more often than every
@@ -1307,24 +1298,24 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         last_drain_ms.store(now_ms, std::memory_order_relaxed);
                     }
                     {
-                    // [SLOWEOP] drain phase of the 0x47 packet.
-                    Parserprof::PhaseProbe eop_drain_probe{Parserprof::PhDrain};
-                    const s64 dl_t0 =
-                        Parserprof::Enabled()
-                            ? std::chrono::duration_cast<std::chrono::microseconds>(
-                                  std::chrono::steady_clock::now().time_since_epoch())
-                                  .count()
-                            : 0;
-                    Parserprof::g_dl_eop_calls.fetch_add(1, std::memory_order_relaxed);
-                    rasterizer->ProcessDownloadImages();
-                    if (dl_t0 != 0) {
-                        const s64 dl_now =
-                            std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count();
-                        Parserprof::g_evw_dl_us.fetch_add(static_cast<u64>(dl_now - dl_t0),
-                                                 std::memory_order_relaxed);
-                    }
+                        // [SLOWEOP] drain phase of the 0x47 packet.
+                        Parserprof::PhaseProbe eop_drain_probe{Parserprof::PhDrain};
+                        const s64 dl_t0 =
+                            Parserprof::Enabled()
+                                ? std::chrono::duration_cast<std::chrono::microseconds>(
+                                      std::chrono::steady_clock::now().time_since_epoch())
+                                      .count()
+                                : 0;
+                        Parserprof::g_dl_eop_calls.fetch_add(1, std::memory_order_relaxed);
+                        rasterizer->ProcessDownloadImages();
+                        if (dl_t0 != 0) {
+                            const s64 dl_now =
+                                std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+                            Parserprof::g_evw_dl_us.fetch_add(static_cast<u64>(dl_now - dl_t0),
+                                                              std::memory_order_relaxed);
+                        }
                     }
                 eop_drain_done:;
                     if (EopRetire()) {
@@ -1351,8 +1342,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     const s64 now_ms = Postmortem::NowMs();
                     // [Stage1 PARSERPROF] EOP silence window: gap since the previous signal.
                     // The frame-tick assert fires when this exceeds ~3 frames; target <= 100 ms.
-                    const s64 prev = Postmortem::g_eop_signal_ms.exchange(now_ms,
-                                                                          std::memory_order_relaxed);
+                    const s64 prev =
+                        Postmortem::g_eop_signal_ms.exchange(now_ms, std::memory_order_relaxed);
                     if (prev != 0 && now_ms > prev) {
                         Postmortem::AtomicMax(Postmortem::g_eop_gap_max_ms,
                                               static_cast<u64>(now_ms - prev));
@@ -1363,30 +1354,32 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         if (now_ms >= expected &&
                             next_ms.compare_exchange_strong(expected, now_ms + 5000) &&
                             expected != 0) {
-                            LOG_CRITICAL(Render,
-                                         "PARSERPROF: eop_gap_max_ms={} compiles={} specmiss={} "
-                                         "prof_pipe_us={} | pkt draw={} wrm={} evw={} dma={} "
-                                         "other={} max={}us op={:#x} | dl={} fin={} fbw={} | "
-                                         "dlq eos={} eop={} eos_skip={} gap_skip={} addrunbind={}",
-                                         Postmortem::g_eop_gap_max_ms.load(std::memory_order_relaxed),
-                                         Parserprof::g_compile_count.load(std::memory_order_relaxed),
-                                         Parserprof::g_specmiss_count.load(std::memory_order_relaxed),
-                                         Parserprof::g_prof_pipe_us.load(std::memory_order_relaxed),
-                                         Parserprof::g_pkt_draw_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_pkt_wrm_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_pkt_evw_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_pkt_dma_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_pkt_other_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_pkt_max_us.load(std::memory_order_relaxed),
-                                         Parserprof::g_pkt_max_op.load(std::memory_order_relaxed),
-                                         Parserprof::g_evw_dl_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_evw_fin_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_fb_wait_us.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_dl_eos_calls.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_dl_eop_calls.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_dl_eos_skipped.exchange(0, std::memory_order_relaxed),
-                                         Parserprof::g_dl_gap_skipped.exchange(0, std::memory_order_relaxed),
-                                         Vulkan::AddrBind::unbind_shader_region.load(std::memory_order_relaxed));
+                            LOG_CRITICAL(
+                                Render,
+                                "PARSERPROF: eop_gap_max_ms={} compiles={} specmiss={} "
+                                "prof_pipe_us={} | pkt draw={} wrm={} evw={} dma={} "
+                                "other={} max={}us op={:#x} | dl={} fin={} fbw={} | "
+                                "dlq eos={} eop={} eos_skip={} gap_skip={} addrunbind={}",
+                                Postmortem::g_eop_gap_max_ms.load(std::memory_order_relaxed),
+                                Parserprof::g_compile_count.load(std::memory_order_relaxed),
+                                Parserprof::g_specmiss_count.load(std::memory_order_relaxed),
+                                Parserprof::g_prof_pipe_us.load(std::memory_order_relaxed),
+                                Parserprof::g_pkt_draw_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_pkt_wrm_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_pkt_evw_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_pkt_dma_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_pkt_other_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_pkt_max_us.load(std::memory_order_relaxed),
+                                Parserprof::g_pkt_max_op.load(std::memory_order_relaxed),
+                                Parserprof::g_evw_dl_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_evw_fin_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_fb_wait_us.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_dl_eos_calls.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_dl_eop_calls.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_dl_eos_skipped.exchange(0, std::memory_order_relaxed),
+                                Parserprof::g_dl_gap_skipped.exchange(0, std::memory_order_relaxed),
+                                Vulkan::AddrBind::unbind_shader_region.load(
+                                    std::memory_order_relaxed));
                             // [SLOWPKT] Draw-class phase split over the same 5s window; names
                             // the top-3 phases so the fatal packet class is attributable at a
                             // glance even after the 32-line SLOWPKT cap is spent.
@@ -1427,8 +1420,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                                Postmortem::g_flips_total.load(
                                                    std::memory_order_relaxed),
                                                std::memory_order_relaxed));
-                                const u64 rp_starts = Parserprof::g_rp_starts.exchange(
-                                    0, std::memory_order_relaxed);
+                                const u64 rp_starts =
+                                    Parserprof::g_rp_starts.exchange(0, std::memory_order_relaxed);
                                 const u64 bar_buffers = Parserprof::g_bar_buffers.exchange(
                                     0, std::memory_order_relaxed);
                                 const u64 desc_writes = Parserprof::g_desc_writes.exchange(
@@ -1441,11 +1434,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     rp_starts, rp_starts / frames,
                                     Parserprof::g_rp_attach.exchange(0, std::memory_order_relaxed),
                                     Parserprof::g_rp_ends.exchange(0, std::memory_order_relaxed));
-                                LOG_CRITICAL(Render,
-                                             "BARSTAT: barrier_calls={} buffers={} per_frame={}",
-                                             Parserprof::g_bar_calls.exchange(
-                                                 0, std::memory_order_relaxed),
-                                             bar_buffers, bar_buffers / frames);
+                                LOG_CRITICAL(
+                                    Render, "BARSTAT: barrier_calls={} buffers={} per_frame={}",
+                                    Parserprof::g_bar_calls.exchange(0, std::memory_order_relaxed),
+                                    bar_buffers, bar_buffers / frames);
                                 {
                                     // Read into locals: mixing load() and exchange(0) as
                                     // arguments of one call left the order unspecified, the
@@ -1478,8 +1470,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                         0, std::memory_order_relaxed);
                                     const u64 created = Parserprof::g_pipe_created.exchange(
                                         0, std::memory_order_relaxed);
-                                    const u64 uniq = Parserprof::g_pipe_unique.load(
-                                        std::memory_order_relaxed);
+                                    const u64 uniq =
+                                        Parserprof::g_pipe_unique.load(std::memory_order_relaxed);
                                     const u64 d_sh = Parserprof::g_pipe_d_shaders.exchange(
                                         0, std::memory_order_relaxed);
                                     const u64 d_bl = Parserprof::g_pipe_d_blend.exchange(
@@ -1508,31 +1500,30 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                 }
                                 {
                                     // Locals before the log call - the BINDSTAT rule.
-                                    const u64 tb = Parserprof::g_ws_total_bufs.load(
-                                        std::memory_order_relaxed);
+                                    const u64 tb =
+                                        Parserprof::g_ws_total_bufs.load(std::memory_order_relaxed);
                                     const u64 tby = Parserprof::g_ws_total_bytes.load(
                                         std::memory_order_relaxed);
                                     const u64 wb = Parserprof::g_ws_written_bufs.load(
                                         std::memory_order_relaxed);
                                     const u64 wby = Parserprof::g_ws_written_bytes.load(
                                         std::memory_order_relaxed);
-                                    const u64 lb = Parserprof::g_ws_late_bufs.load(
-                                        std::memory_order_relaxed);
-                                    const u64 lby = Parserprof::g_ws_late_bytes.load(
-                                        std::memory_order_relaxed);
+                                    const u64 lb =
+                                        Parserprof::g_ws_late_bufs.load(std::memory_order_relaxed);
+                                    const u64 lby =
+                                        Parserprof::g_ws_late_bytes.load(std::memory_order_relaxed);
                                     LOG_CRITICAL(
                                         Render,
                                         "WRITESTAT: written_bufs={} ({} MB) | readonly_bufs={} "
                                         "({} MB) | write_once_early={} ({} MB) | still_writing={} "
                                         "({} MB) | upMB_since_flipstat={} sync_us={}",
                                         wb, wby >> 20, tb > wb ? tb - wb : 0,
-                                        tby > wby ? (tby - wby) >> 20 : 0,
-                                        wb > lb ? wb - lb : 0,
+                                        tby > wby ? (tby - wby) >> 20 : 0, wb > lb ? wb - lb : 0,
                                         wby > lby ? (wby - lby) >> 20 : 0, lb, lby >> 20,
                                         Vulkan::g_dbg_upload_bytes.load(
-                                            std::memory_order_relaxed) >> 20,
-                                        Postmortem::g_buf_sync_us.load(
-                                            std::memory_order_relaxed) /
+                                            std::memory_order_relaxed) >>
+                                            20,
+                                        Postmortem::g_buf_sync_us.load(std::memory_order_relaxed) /
                                             1000); // [FRAMECHAIN] UsTimer sink: ns -> us
                                 }
                                 {
@@ -1561,48 +1552,47 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                         "unique_ro={}MB unique_rw={}MB ({} bufs) | "
                                         "stream={}KB ({} calls) | reread_x100={} | frames={}",
                                         (b_ro / ts_fr) >> 20, (b_rw / ts_fr) >> 20,
-                                        (u_ro / ts_fr) >> 20, (u_rw / ts_fr) >> 20,
-                                        u_bufs / ts_fr, (s_by / ts_fr) >> 10, s_calls / ts_fr,
-                                        (u_ro + u_rw) != 0
-                                            ? ((b_ro + b_rw) * 100) / (u_ro + u_rw)
-                                            : 0,
+                                        (u_ro / ts_fr) >> 20, (u_rw / ts_fr) >> 20, u_bufs / ts_fr,
+                                        (s_by / ts_fr) >> 10, s_calls / ts_fr,
+                                        (u_ro + u_rw) != 0 ? ((b_ro + b_rw) * 100) / (u_ro + u_rw)
+                                                           : 0,
                                         frames);
                                 }
-                                LOG_CRITICAL(Render,
-                                             "PKTHIST: <0.1ms={} 0.1-1ms={} 1-5ms={} 5-20ms={} "
-                                             ">20ms={}",
-                                             Parserprof::g_pkt_hist[0].exchange(
-                                                 0, std::memory_order_relaxed),
-                                             Parserprof::g_pkt_hist[1].exchange(
-                                                 0, std::memory_order_relaxed),
-                                             Parserprof::g_pkt_hist[2].exchange(
-                                                 0, std::memory_order_relaxed),
-                                             Parserprof::g_pkt_hist[3].exchange(
-                                                 0, std::memory_order_relaxed),
-                                             Parserprof::g_pkt_hist[4].exchange(
-                                                 0, std::memory_order_relaxed));
-                                std::sort(std::begin(ph), std::end(ph),
-                                          [](const PhVal& a, const PhVal& b) {
-                                              return a.us > b.us;
-                                          });
+                                LOG_CRITICAL(
+                                    Render,
+                                    "PKTHIST: <0.1ms={} 0.1-1ms={} 1-5ms={} 5-20ms={} "
+                                    ">20ms={}",
+                                    Parserprof::g_pkt_hist[0].exchange(0,
+                                                                       std::memory_order_relaxed),
+                                    Parserprof::g_pkt_hist[1].exchange(0,
+                                                                       std::memory_order_relaxed),
+                                    Parserprof::g_pkt_hist[2].exchange(0,
+                                                                       std::memory_order_relaxed),
+                                    Parserprof::g_pkt_hist[3].exchange(0,
+                                                                       std::memory_order_relaxed),
+                                    Parserprof::g_pkt_hist[4].exchange(0,
+                                                                       std::memory_order_relaxed));
+                                std::sort(
+                                    std::begin(ph), std::end(ph),
+                                    [](const PhVal& a, const PhVal& b) { return a.us > b.us; });
                                 // [FRAMECHAIN] + dma: it used to sit inside desc, so the total
                                 // stays comparable with pre-W0 windows.
-                                const u64 win_total = ph[0].us + ph[1].us + ph[2].us +
-                                                      ph[3].us + ph[4].us + ph[5].us +
-                                                      phw[Parserprof::PhDma];
+                                const u64 win_total = ph[0].us + ph[1].us + ph[2].us + ph[3].us +
+                                                      ph[4].us + ph[5].us + phw[Parserprof::PhDma];
                                 // [SLOWWAIT] wait/starve split of the same window: busy
                                 // (win_total) + wrm_wait + starve should account for the EOP
                                 // gap; whatever is left is "other queues / unprobed".
                                 const u64 win_wait = Parserprof::g_wrm_wait_us.exchange(
                                     0, std::memory_order_relaxed);
-                                const u64 win_starve = Parserprof::g_starve_us.exchange(
-                                    0, std::memory_order_relaxed);
+                                const u64 win_starve =
+                                    Parserprof::g_starve_us.exchange(0, std::memory_order_relaxed);
                                 if (win_total != 0 || win_wait != 0 || win_starve != 0) {
                                     LOG_CRITICAL(
                                         Render,
                                         "PARSERPROF: draw phases top3 {}={}us {}={}us {}={}us "
                                         "(win_total={}us wrm_wait={}us starve={}us "
-                                        "slow_suppressed={} hashcap_skipped={} subfix_released={} gc_us={})",
+                                        "slow_suppressed={} hashcap_skipped={} subfix_released={} "
+                                        "gc_us={})",
                                         ph[0].name, ph[0].us, ph[1].name, ph[1].us, ph[2].name,
                                         ph[2].us, win_total, win_wait, win_starve,
                                         Parserprof::g_slow_suppressed.load(
@@ -1611,8 +1601,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                             std::memory_order_relaxed),
                                         Postmortem::g_subfix_released.load(
                                             std::memory_order_relaxed),
-                                        Postmortem::g_gc_us.exchange(
-                                            0, std::memory_order_relaxed));
+                                        Postmortem::g_gc_us.exchange(0, std::memory_order_relaxed));
                                 }
                                 // [FRAMECHAIN] All phases, per frame, GFX draw class then ASC
                                 // dispatches, then the DMA block. Locals first, then the lines.
@@ -1643,13 +1632,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                         "dma={} vk={} other={} | bind={} rp={} barr={} draw={} "
                                         "sched={} | eop drain={} signal={} flip={} hash={} | "
                                         "frames={}",
-                                        phw[Parserprof::PhCompile] / fr, phw[Parserprof::PhTex] / fr,
-                                        phw[Parserprof::PhBuf] / fr, phw[Parserprof::PhDesc] / fr,
-                                        phw[Parserprof::PhDma] / fr, phw[Parserprof::PhVk] / fr,
-                                        phw[Parserprof::PhOther] / fr, phw[Parserprof::PhBind] / fr,
-                                        phw[Parserprof::PhRp] / fr, phw[Parserprof::PhBarr] / fr,
-                                        phw[Parserprof::PhDraw] / fr, phw[Parserprof::PhSched] / fr,
-                                        phw[Parserprof::PhDrain] / fr, phw[Parserprof::PhSignal] / fr,
+                                        phw[Parserprof::PhCompile] / fr,
+                                        phw[Parserprof::PhTex] / fr, phw[Parserprof::PhBuf] / fr,
+                                        phw[Parserprof::PhDesc] / fr, phw[Parserprof::PhDma] / fr,
+                                        phw[Parserprof::PhVk] / fr, phw[Parserprof::PhOther] / fr,
+                                        phw[Parserprof::PhBind] / fr, phw[Parserprof::PhRp] / fr,
+                                        phw[Parserprof::PhBarr] / fr, phw[Parserprof::PhDraw] / fr,
+                                        phw[Parserprof::PhSched] / fr,
+                                        phw[Parserprof::PhDrain] / fr,
+                                        phw[Parserprof::PhSignal] / fr,
                                         phw[Parserprof::PhFlip] / fr, phw[Parserprof::PhHash] / fr,
                                         fr);
                                     LOG_CRITICAL(
@@ -1658,14 +1649,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                         "dma={} vk={} other={} | bind={} rp={} barr={} draw={} "
                                         "sched={} | dispatch_total={} | asc pkts={}us(x{}) "
                                         "wait_pkts={}us(x{}, wall incl. suspended)",
-                                        pha[Parserprof::PhCompile] / fr, pha[Parserprof::PhTex] / fr,
-                                        pha[Parserprof::PhBuf] / fr, pha[Parserprof::PhDesc] / fr,
-                                        pha[Parserprof::PhDma] / fr, pha[Parserprof::PhVk] / fr,
-                                        pha[Parserprof::PhOther] / fr, pha[Parserprof::PhBind] / fr,
-                                        pha[Parserprof::PhRp] / fr, pha[Parserprof::PhBarr] / fr,
-                                        pha[Parserprof::PhDraw] / fr, pha[Parserprof::PhSched] / fr,
-                                        asc_phased_total / fr, asc_pk_us / fr, asc_pk_n / fr,
-                                        asc_wt_us / fr, asc_wt_n / fr);
+                                        pha[Parserprof::PhCompile] / fr,
+                                        pha[Parserprof::PhTex] / fr, pha[Parserprof::PhBuf] / fr,
+                                        pha[Parserprof::PhDesc] / fr, pha[Parserprof::PhDma] / fr,
+                                        pha[Parserprof::PhVk] / fr, pha[Parserprof::PhOther] / fr,
+                                        pha[Parserprof::PhBind] / fr, pha[Parserprof::PhRp] / fr,
+                                        pha[Parserprof::PhBarr] / fr, pha[Parserprof::PhDraw] / fr,
+                                        pha[Parserprof::PhSched] / fr, asc_phased_total / fr,
+                                        asc_pk_us / fr, asc_pk_n / fr, asc_wt_us / fr,
+                                        asc_wt_n / fr);
                                     LOG_CRITICAL(
                                         Render,
                                         "DMASYNC/frame: sweeps={:.2f} zone_runs={:.1f} dma_us={} "
@@ -1697,9 +1689,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     // (with SHADPS4_EOPIRQRETIRE=1 the EOP callback, and this
                                     // report with it, runs on the retire thread): else 0 = n/a.
                                     const u64 cpu_now =
-                                        FcCurrentThreadId() ==
-                                                Parserprof::g_parser_tid.load(
-                                                    std::memory_order_relaxed)
+                                        FcCurrentThreadId() == Parserprof::g_parser_tid.load(
+                                                                   std::memory_order_relaxed)
                                             ? FcThreadCpu100ns()
                                             : 0;
                                     const u64 cpu_ns =
@@ -1713,9 +1704,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     // "cpu=2.0 ms/frame" sat next to "gfx_resume=14.2 ms/frame".
                                     static u64 s_fc_cycles = 0;
                                     const u64 cyc_now =
-                                        FcCurrentThreadId() ==
-                                                Parserprof::g_parser_tid.load(
-                                                    std::memory_order_relaxed)
+                                        FcCurrentThreadId() == Parserprof::g_parser_tid.load(
+                                                                   std::memory_order_relaxed)
                                             ? FcThreadCycles()
                                             : 0;
                                     const u64 cyc_delta =
@@ -1788,12 +1778,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                         0, std::memory_order_relaxed);
                                     const u64 frame_wait_n = Parserprof::g_fc_frame_wait_n.exchange(
                                         0, std::memory_order_relaxed);
-                                    const u64 idle_sub = Parserprof::g_fc_idle_to_submit_ns.exchange(
-                                        0, std::memory_order_relaxed);
-                                    const u64 idle_sub_n = Parserprof::g_fc_idle_to_submit_n.exchange(
-                                        0, std::memory_order_relaxed);
-                                    const u64 sd_wait_us = Parserprof::g_fc_guest_sd_wait_us.exchange(
-                                        0, std::memory_order_relaxed);
+                                    const u64 idle_sub =
+                                        Parserprof::g_fc_idle_to_submit_ns.exchange(
+                                            0, std::memory_order_relaxed);
+                                    const u64 idle_sub_n =
+                                        Parserprof::g_fc_idle_to_submit_n.exchange(
+                                            0, std::memory_order_relaxed);
+                                    const u64 sd_wait_us =
+                                        Parserprof::g_fc_guest_sd_wait_us.exchange(
+                                            0, std::memory_order_relaxed);
                                     const u64 sd_int_us =
                                         Parserprof::g_fc_guest_sd_interval_us.exchange(
                                             0, std::memory_order_relaxed);
@@ -1804,8 +1797,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                             0, std::memory_order_relaxed);
                                     const u64 sub_n = Parserprof::g_fc_guest_submit_n.exchange(
                                         0, std::memory_order_relaxed);
-                                    const u64 dd_wait_us = Parserprof::g_fc_guest_dd_wait_us.exchange(
-                                        0, std::memory_order_relaxed);
+                                    const u64 dd_wait_us =
+                                        Parserprof::g_fc_guest_dd_wait_us.exchange(
+                                            0, std::memory_order_relaxed);
                                     const u64 dd_n = Parserprof::g_fc_guest_dd_n.exchange(
                                         0, std::memory_order_relaxed);
                                     const u64 pop = Parserprof::g_fc_pop_ns.exchange(
@@ -1824,9 +1818,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     // tasks plus the tasks themselves plus the sleep, against
                                     // the window's wall. What is left is still unprobed.
                                     const u64 starve_ns = win_starve * 1000;
-                                    const u64 in_loop = gfx_resume + asc_resume + asc_spin + cmd + flip;
+                                    const u64 in_loop =
+                                        gfx_resume + asc_resume + asc_spin + cmd + flip;
                                     const u64 loop_over = loop_ns > in_loop ? loop_ns - in_loop : 0;
-                                    const u64 sum_ns = in_loop + onsubmit + flush + gpuidle + starve_ns;
+                                    const u64 sum_ns =
+                                        in_loop + onsubmit + flush + gpuidle + starve_ns;
                                     const u64 covered = sum_ns + loop_over;
                                     const u64 unacc = wall_ns > covered ? wall_ns - covered : 0;
                                     const auto pf = [fr](u64 ns) { return ns / 1000 / fr; };
@@ -1881,8 +1877,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                         pm(sum_ns), pm(loop_over), pm(covered), pm(wall_ns),
                                         pm(unacc), pm(cpu_ns),
                                         wall_ns != 0 ? cpu_ns * 100 / wall_ns : 0,
-                                        fr != 0 ? cyc_delta / fr / 1000000 : 0,
-                                        wall_ns / 1000000, fr);
+                                        fr != 0 ? cyc_delta / fr / 1000000 : 0, wall_ns / 1000000,
+                                        fr);
                                 }
                             }
                             // [BUFPROF/RESSTAT] Where the dominant `buf` phase actually goes,
@@ -1897,10 +1893,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                 const u64 cr = Postmortem::g_buf_create_us.exchange(
                                                    0, std::memory_order_relaxed) /
                                                1000;
-                                const u64 last_streamcopy_us =
-                                    Postmortem::g_buf_streamcopy_us.load(
-                                        std::memory_order_relaxed) /
-                                    1000;
+                                const u64 last_streamcopy_us = Postmortem::g_buf_streamcopy_us.load(
+                                                                   std::memory_order_relaxed) /
+                                                               1000;
                                 const u64 last_sync_us =
                                     Postmortem::g_buf_sync_us.load(std::memory_order_relaxed) /
                                     1000;
@@ -1908,8 +1903,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     Postmortem::g_buf_gpumod_us.load(std::memory_order_relaxed) /
                                     1000;
                                 const u64 last_labelint_us =
-                                    Postmortem::g_buf_labelint_us.load(
-                                        std::memory_order_relaxed) /
+                                    Postmortem::g_buf_labelint_us.load(std::memory_order_relaxed) /
                                     1000;
                                 const u64 backing_off_us =
                                     Postmortem::g_buf_backing_off_us.exchange(
@@ -1928,10 +1922,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     0, std::memory_order_relaxed);
                                 const u64 obtains = Postmortem::g_buf_obtains.exchange(
                                     0, std::memory_order_relaxed);
-                                const u64 streamcopy_us =
-                                    Postmortem::g_buf_streamcopy_us.exchange(
-                                        0, std::memory_order_relaxed) /
-                                    1000;
+                                const u64 streamcopy_us = Postmortem::g_buf_streamcopy_us.exchange(
+                                                              0, std::memory_order_relaxed) /
+                                                          1000;
                                 const u64 streamcopies = Postmortem::g_buf_streamcopies.exchange(
                                     0, std::memory_order_relaxed);
                                 const u64 find_us = Postmortem::g_buf_find_us.exchange(
@@ -1950,7 +1943,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     Render,
                                     "BUFPROF: lookup={}us create={}us backing_off={}us "
                                     "vk_create={}us register={}us overlap={}us | creates={} "
-                                    "obtains={} || streamcopy={}us({}) find={}us sync={}us gpumod={}us labelint={}us",
+                                    "obtains={} || streamcopy={}us({}) find={}us sync={}us "
+                                    "gpumod={}us labelint={}us",
                                     ob > cr ? ob - cr : 0, cr, backing_off_us, vk_create_us,
                                     register_us, overlap_us, creates, obtains, streamcopy_us,
                                     streamcopies, find_us, sync_us, gpumod_us, labelint_us);
@@ -1977,16 +1971,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     const u64 covered = last_streamcopy_us + last_sync_us +
                                                         last_gpumod_us + last_labelint_us +
                                                         written + ret;
-                                    LOG_CRITICAL(
-                                        Render,
-                                        "BUFPROF2: entry={}us lockwait={}us written={}us "
-                                        "ret={}us covered={}us | probes={} clock_ns={} "
-                                        "est_probe={}us unaccounted={}us",
-                                        entry_us, lockwait, written, ret, covered, probes,
-                                        Postmortem::ProbeClockNs(), est_probe_us,
-                                        lookup_us > covered + est_probe_us
-                                            ? lookup_us - covered - est_probe_us
-                                            : 0);
+                                    LOG_CRITICAL(Render,
+                                                 "BUFPROF2: entry={}us lockwait={}us written={}us "
+                                                 "ret={}us covered={}us | probes={} clock_ns={} "
+                                                 "est_probe={}us unaccounted={}us",
+                                                 entry_us, lockwait, written, ret, covered, probes,
+                                                 Postmortem::ProbeClockNs(), est_probe_us,
+                                                 lookup_us > covered + est_probe_us
+                                                     ? lookup_us - covered - est_probe_us
+                                                     : 0);
                                 }
                                 LOG_CRITICAL(
                                     Render,
@@ -2021,29 +2014,20 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                     Render,
                                     "RESSTAT-HIST: b0(<4K)={} b1(4-64K)={} b2(64K-1M)={} "
                                     "b3(>1M)={} | dedicated_allocs={} maxMemoryAllocationCount={}",
-                                    Postmortem::g_backing_hist[0].load(
-                                        std::memory_order_relaxed),
-                                    Postmortem::g_backing_hist[1].load(
-                                        std::memory_order_relaxed),
-                                    Postmortem::g_backing_hist[2].load(
-                                        std::memory_order_relaxed),
-                                    Postmortem::g_backing_hist[3].load(
-                                        std::memory_order_relaxed),
-                                    Postmortem::g_live_dedicated.load(
-                                        std::memory_order_relaxed),
-                                    Postmortem::g_max_mem_allocs.load(
-                                        std::memory_order_relaxed));
-                                LOG_CRITICAL(Render,
-                                             "RESSTAT: buffers={} images={} backing_bufs={} "
-                                             "vram_MB={}",
-                                             Postmortem::g_res_buffers.load(
-                                                 std::memory_order_relaxed),
-                                             Postmortem::g_res_images.load(
-                                                 std::memory_order_relaxed),
-                                             Postmortem::g_res_backing_bufs.load(
-                                                 std::memory_order_relaxed),
-                                             Postmortem::g_res_vram_mb.load(
-                                                 std::memory_order_relaxed));
+                                    Postmortem::g_backing_hist[0].load(std::memory_order_relaxed),
+                                    Postmortem::g_backing_hist[1].load(std::memory_order_relaxed),
+                                    Postmortem::g_backing_hist[2].load(std::memory_order_relaxed),
+                                    Postmortem::g_backing_hist[3].load(std::memory_order_relaxed),
+                                    Postmortem::g_live_dedicated.load(std::memory_order_relaxed),
+                                    Postmortem::g_max_mem_allocs.load(std::memory_order_relaxed));
+                                LOG_CRITICAL(
+                                    Render,
+                                    "RESSTAT: buffers={} images={} backing_bufs={} "
+                                    "vram_MB={}",
+                                    Postmortem::g_res_buffers.load(std::memory_order_relaxed),
+                                    Postmortem::g_res_images.load(std::memory_order_relaxed),
+                                    Postmortem::g_res_backing_bufs.load(std::memory_order_relaxed),
+                                    Postmortem::g_res_vram_mb.load(std::memory_order_relaxed));
                             }
                             // [R8] one-shot verdict on the driver: by the first 5s report the
                             // pipeline-creation shower must have produced events if the driver
@@ -2219,19 +2203,33 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     const u32 cntl = acquire_mem->cp_coher_cntl;
                     bool hit = false;
                     for (auto& [v, n] : hist) {
-                        if (n != 0 && v == cntl) { ++n; hit = true; break; }
-                        if (n == 0) { v = cntl; n = 1; hit = true; break; }
+                        if (n != 0 && v == cntl) {
+                            ++n;
+                            hit = true;
+                            break;
+                        }
+                        if (n == 0) {
+                            v = cntl;
+                            n = 1;
+                            hit = true;
+                            break;
+                        }
                     }
-                    if (!hit) ++other;
+                    if (!hit)
+                        ++other;
                     const auto now = std::chrono::steady_clock::now();
                     if (now >= next) {
                         next = now + std::chrono::seconds(10);
                         std::string line;
                         for (const auto& [v, n] : hist) {
-                            if (n) fmt::format_to(std::back_inserter(line), "{:#x}x{} ", v, n);
+                            if (n)
+                                fmt::format_to(std::back_inserter(line), "{:#x}x{} ", v, n);
                         }
-                        LOG_CRITICAL(Render_Vulkan, "ACQSTAT: gfx cp_coher_cntl {} other={} size={:#x}", line, other,
-                                     (u64{acquire_mem->cp_coher_size_hi} << 32) | acquire_mem->cp_coher_size_lo);
+                        LOG_CRITICAL(Render_Vulkan,
+                                     "ACQSTAT: gfx cp_coher_cntl {} other={} size={:#x}", line,
+                                     other,
+                                     (u64{acquire_mem->cp_coher_size_hi} << 32) |
+                                         acquire_mem->cp_coher_size_lo);
                     }
                 }
                 break;
@@ -2311,8 +2309,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         if (sw_prof) {
                             const s64 sw_t1 = Parserprof::NowUs();
                             if (sw_t1 > sw_t0) {
-                                Parserprof::g_wrm_wait_us.fetch_add(
-                                    static_cast<u64>(sw_t1 - sw_t0), std::memory_order_relaxed);
+                                Parserprof::g_wrm_wait_us.fetch_add(static_cast<u64>(sw_t1 - sw_t0),
+                                                                    std::memory_order_relaxed);
                             }
                             Postmortem::g_wrm_cur.store(
                                 *reinterpret_cast<const volatile u32*>(wait_addr),
@@ -2328,15 +2326,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                             "STUCK WaitRegMem: addr={:#x} func={} ref={:#x} "
                                             "mask={:#x} mem={:#x} vo_label={} waited={}s",
                                             reinterpret_cast<u64>(wait_addr),
-                                            (u32)wait_reg_mem->function.Value(),
-                                            wait_reg_mem->ref, wait_reg_mem->mask,
+                                            (u32)wait_reg_mem->function.Value(), wait_reg_mem->ref,
+                                            wait_reg_mem->mask,
                                             *reinterpret_cast<const u32*>(wait_addr),
                                             vo_port->IsVoLabel(wait_addr), sec);
                             }
                         }
                         // [R6 D5] WRMSTUCK: independent of SHADPS4_STUCKLOG (that env kept the old
-                        // sensor dead in the field). Own capped LOG_CRITICAL under RINGSENSE - fires
-                        // inside the 40s wedge to prove/deny the WaitRegMem-spin candidate.
+                        // sensor dead in the field). Own capped LOG_CRITICAL under RINGSENSE -
+                        // fires inside the 40s wedge to prove/deny the WaitRegMem-spin candidate.
                         static const bool pm_ringsense = [] {
                             const char* e = std::getenv("SHADPS4_RINGSENSE");
                             return e && e[0] == '1';
@@ -2349,14 +2347,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                                      .count();
                                 if (sec >= 5 &&
                                     pm_wrm_logged.fetch_add(1, std::memory_order_relaxed) < 3) {
-                                    LOG_CRITICAL(Render,
-                                                 "WRMSTUCK: addr={:#x} func={} ref={:#x} mask={:#x} "
-                                                 "mem={:#x} vo_label={} waited={}s",
-                                                 reinterpret_cast<u64>(wait_addr),
-                                                 (u32)wait_reg_mem->function.Value(),
-                                                 wait_reg_mem->ref, wait_reg_mem->mask,
-                                                 *reinterpret_cast<const u32*>(wait_addr),
-                                                 vo_port->IsVoLabel(wait_addr), sec);
+                                    LOG_CRITICAL(
+                                        Render,
+                                        "WRMSTUCK: addr={:#x} func={} ref={:#x} mask={:#x} "
+                                        "mem={:#x} vo_label={} waited={}s",
+                                        reinterpret_cast<u64>(wait_addr),
+                                        (u32)wait_reg_mem->function.Value(), wait_reg_mem->ref,
+                                        wait_reg_mem->mask,
+                                        *reinterpret_cast<const u32*>(wait_addr),
+                                        vo_port->IsVoLabel(wait_addr), sec);
                                 }
                             }
                         }
@@ -2369,13 +2368,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         Postmortem::g_gfx_state.store(0, std::memory_order_relaxed);
                     }
                     if (sw_prof) {
-                        const s64 waited_ms =
-                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - t_wait0)
-                                .count();
-                        if (waited_ms > 500 &&
-                            Parserprof::g_slowwait_lines.fetch_add(
-                                1, std::memory_order_relaxed) < 32) {
+                        const s64 waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  std::chrono::steady_clock::now() - t_wait0)
+                                                  .count();
+                        if (waited_ms > 500 && Parserprof::g_slowwait_lines.fetch_add(
+                                                   1, std::memory_order_relaxed) < 32) {
                             LOG_CRITICAL(Render,
                                          "SLOWWAIT: queue=gfx addr={:#x} func={} ref={:#x} "
                                          "mask={:#x} cur={:#x} waited={}ms seq={}",
@@ -2384,8 +2381,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                          wait_reg_mem->mask,
                                          *reinterpret_cast<const volatile u32*>(wait_addr),
                                          waited_ms,
-                                         Postmortem::g_opring_seq.load(
-                                             std::memory_order_relaxed));
+                                         Postmortem::g_opring_seq.load(std::memory_order_relaxed));
                         }
                     }
                 }
@@ -2512,13 +2508,13 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
     // waited for the round-robin. Consumed once (exchange); top-level tasks only.
     if constexpr (!is_indirect) {
         if (Parserprof::Enabled() && vqid < Parserprof::kFcAscQueues) {
-            const s64 fc_stamp = Parserprof::g_asc_submit_stamp_ns[vqid].exchange(
-                0, std::memory_order_relaxed);
+            const s64 fc_stamp =
+                Parserprof::g_asc_submit_stamp_ns[vqid].exchange(0, std::memory_order_relaxed);
             if (fc_stamp != 0) {
                 const s64 fc_now = Parserprof::NowNs();
                 if (fc_now > fc_stamp) {
-                    Parserprof::g_fc_asc_kick_lat_ns.fetch_add(
-                        static_cast<u64>(fc_now - fc_stamp), std::memory_order_relaxed);
+                    Parserprof::g_fc_asc_kick_lat_ns.fetch_add(static_cast<u64>(fc_now - fc_stamp),
+                                                               std::memory_order_relaxed);
                 }
                 Parserprof::g_fc_asc_kick_n.fetch_add(1, std::memory_order_relaxed);
             }
@@ -2583,8 +2579,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         const bool fc_prof = Parserprof::Enabled();
         if (fc_prof && vqid < 8) {
             Postmortem::g_asc_pkts[vqid].fetch_add(1, std::memory_order_relaxed);
-            Postmortem::g_asc_last_ms[vqid].store(Postmortem::NowMs(),
-                                                  std::memory_order_relaxed);
+            Postmortem::g_asc_last_ms[vqid].store(Postmortem::NowMs(), std::memory_order_relaxed);
         }
         // [FRAMECHAIN] Progress marker for the spin detector in Process() + ASC packet count,
         // then the per-packet timer (PktTimer at file scope, `asc` flavour): dispatches get
@@ -2794,9 +2789,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             }
             ASSERT(wait_reg_mem->engine.Value() == PM4CmdWaitRegMem::Engine::Me);
             // [SLOWWAIT] Completion-only line for compute queues (>500ms, shared 32-line cap).
-            const auto sw_asc_t0 =
-                Parserprof::Enabled() ? std::chrono::steady_clock::now()
-                                      : std::chrono::steady_clock::time_point{};
+            const auto sw_asc_t0 = Parserprof::Enabled() ? std::chrono::steady_clock::now()
+                                                         : std::chrono::steady_clock::time_point{};
             bool eop_flushed = false;
             while (!wait_reg_mem->Test(regs.reg_array)) {
                 if (EopRetire() && rasterizer && !eop_flushed) {
@@ -2811,8 +2805,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 if (fc_prof && vqid < Parserprof::kFcAscQueues) {
                     const s64 fc_w1 = Parserprof::NowNs();
                     if (fc_w1 > fc_w0) {
-                        Parserprof::g_asc_wait_ns[vqid].fetch_add(
-                            static_cast<u64>(fc_w1 - fc_w0), std::memory_order_relaxed);
+                        Parserprof::g_asc_wait_ns[vqid].fetch_add(static_cast<u64>(fc_w1 - fc_w0),
+                                                                  std::memory_order_relaxed);
                     }
                 }
             }
@@ -2856,8 +2850,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             }();
             bool csb_deferred_label = false;
             if (rasterizer) {
-                if (csb_defer_label &&
-                    release_mem->data_sel.Value() != DataSelect::GdsMemStore) {
+                if (csb_defer_label && release_mem->data_sel.Value() != DataSelect::GdsMemStore) {
                     const PM4CmdReleaseMem copy = *release_mem;
                     const u32 pipe_id = queue.pipe_id;
                     csb_deferred_label = rasterizer->SkinBatchDeferLabel([copy, pipe_id] {
@@ -2876,7 +2869,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             static const bool s_trace_fence2 = std::getenv("SHADPS4_TRACEFENCE") != nullptr;
             if (s_trace_fence2) {
                 LOG_CRITICAL(Render, "RELM q={} addr={:#x} val={:#x}", queue.pipe_id,
-                            release_mem->Address<u64>(), release_mem->DataQWord());
+                             release_mem->Address<u64>(), release_mem->DataQWord());
             }
             if (rasterizer) {
                 rasterizer->ProcessDownloadImages();
@@ -2990,7 +2983,8 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     // stamp) did the next GFX submit arrive. Counted once per drain (seq), relaxed reads.
     if (Parserprof::Enabled() && num_gfx_submits.load() == 0) {
         const u64 fc_seq = Parserprof::g_fc_gpuidle_seq.load(std::memory_order_acquire);
-        if (fc_seq != 0 && fc_seq != Parserprof::g_fc_idle_seq_seen.load(std::memory_order_relaxed)) {
+        if (fc_seq != 0 &&
+            fc_seq != Parserprof::g_fc_idle_seq_seen.load(std::memory_order_relaxed)) {
             Parserprof::g_fc_idle_seq_seen.store(fc_seq, std::memory_order_relaxed);
             const s64 fc_stamp = Parserprof::g_fc_gpuidle_stamp_ns.load(std::memory_order_relaxed);
             const s64 fc_now = Parserprof::NowNs();

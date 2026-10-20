@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
-#include "common/postmortem.h"
 #include <chrono>
 #include <cstdlib>
 #include <thread>
 #include <magic_enum/magic_enum.hpp>
+#include "common/postmortem.h"
 
 #include "common/assert.h"
 #include "common/debug.h"

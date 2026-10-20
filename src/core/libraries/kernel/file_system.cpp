@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstdlib>
-#include "common/postmortem.h"
 #include <map>
 #include <ranges>
 #include <magic_enum/magic_enum.hpp>
+#include "common/postmortem.h"
 
 #include "common/assert.h"
 #include "common/error.h"
@@ -83,8 +83,8 @@ namespace Libraries::Kernel {
 static void TraceRead(const char* who, Core::FileSys::File* file, s64 offset, u64 len) {
     static const char* trc = std::getenv("SHADPS4_TRACEFILE");
     if (trc && file->m_guest_name.find(trc) != std::string::npos) {
-        LOG_WARNING(Kernel_Fs, "TRACEREAD {}: {} off={:#x} len={:#x}", who,
-                    file->m_guest_name, offset, len);
+        LOG_WARNING(Kernel_Fs, "TRACEREAD {}: {} off={:#x} len={:#x}", who, file->m_guest_name,
+                    offset, len);
     }
 }
 
@@ -378,7 +378,12 @@ s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
         *__Error() = POSIX_EBADF;
         return -1;
     }
-    { u64 total = 0; for (s32 i2 = 0; i2 < iovcnt; ++i2) total += iov[i2].iov_len; TraceRead("read", file, -1, total); }
+    {
+        u64 total = 0;
+        for (s32 i2 = 0; i2 < iovcnt; ++i2)
+            total += iov[i2].iov_len;
+        TraceRead("read", file, -1, total);
+    }
 
     std::scoped_lock lk{file->m_mutex};
     if (file->type == Core::FileSys::FileType::Device) {
@@ -993,7 +998,6 @@ s32 PS4_SYSV_ABI sceKernelRename(const char* from, const char* to) {
     return result;
 }
 
-
 s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 offset) {
     Postmortem::GuestWaitScope wait_scope{"file_preadv", static_cast<u64>(fd),
                                           static_cast<u64>(offset)};
@@ -1010,7 +1014,8 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
     }
     {
         u64 total = 0;
-        for (s32 i = 0; i < iovcnt; ++i) total += iov[i].iov_len;
+        for (s32 i = 0; i < iovcnt; ++i)
+            total += iov[i].iov_len;
         TraceRead("pread", file, offset, total);
     }
 

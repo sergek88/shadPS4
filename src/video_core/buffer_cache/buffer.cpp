@@ -121,7 +121,6 @@ void UniqueBuffer::Create(const vk::BufferCreateInfo& buffer_ci, MemoryUsage usa
     }
 }
 
-
 std::optional<Buffer> Buffer::CreateBackingBacked(const Vulkan::Instance& instance,
                                                   Vulkan::Scheduler& scheduler, VAddr base,
                                                   u64 size, const char** reject_reason,
@@ -198,10 +197,10 @@ std::optional<Buffer> Buffer::CreateBackingBacked(const Vulkan::Instance& instan
     // take the VkBuffer only.
     result.buffer.is_backing = true;
     Postmortem::g_res_backing_bufs.fetch_add(1, std::memory_order_relaxed);
-    Postmortem::g_backing_hist[size < 4096            ? 0
-                               : size < 64 * 1024     ? 1
-                               : size < 1024 * 1024   ? 2
-                                                      : 3]
+    Postmortem::g_backing_hist[size < 4096          ? 0
+                               : size < 64 * 1024   ? 1
+                               : size < 1024 * 1024 ? 2
+                                                    : 3]
         .fetch_add(1, std::memory_order_relaxed);
     // Unlike the private import path this buffer DOES get a CPU pointer: it is the same RW view
     // of the section the GPU is bound to, so host_ptr + delta is exactly the first byte of the
@@ -237,11 +236,10 @@ std::optional<Buffer> Buffer::CreateHostImport(const Vulkan::Instance& instance,
     }
     const auto device = instance.GetDevice();
     const auto host_props = device.getMemoryHostPointerPropertiesEXT(
-        vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
-        reinterpret_cast<void*>(base));
+        vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT, reinterpret_cast<void*>(base));
     if (host_props.result != vk::Result::eSuccess || host_props.value.memoryTypeBits == 0) {
-        LOG_CRITICAL(Render_Vulkan, "LABELUMA import: host props rejected {:#x}:{:#x} ({})",
-                     base, size, vk::to_string(host_props.result));
+        LOG_CRITICAL(Render_Vulkan, "LABELUMA import: host props rejected {:#x}:{:#x} ({})", base,
+                     size, vk::to_string(host_props.result));
         return std::nullopt;
     }
     // Strictly coherent host-visible or nothing: a non-coherent import would
@@ -276,8 +274,8 @@ std::optional<Buffer> Buffer::CreateHostImport(const Vulkan::Instance& instance,
     };
     auto buffer_res = device.createBuffer(buffer_ci.get());
     if (buffer_res.result != vk::Result::eSuccess) {
-        LOG_CRITICAL(Render_Vulkan, "LABELUMA import: createBuffer failed {:#x}:{:#x} ({})",
-                     base, size, vk::to_string(buffer_res.result));
+        LOG_CRITICAL(Render_Vulkan, "LABELUMA import: createBuffer failed {:#x}:{:#x} ({})", base,
+                     size, vk::to_string(buffer_res.result));
         return std::nullopt;
     }
     const vk::StructureChain<vk::MemoryAllocateInfo, vk::ImportMemoryHostPointerInfoEXT,
@@ -307,8 +305,8 @@ std::optional<Buffer> Buffer::CreateHostImport(const Vulkan::Instance& instance,
         device.freeMemory(memory_res.value);
         return std::nullopt;
     }
-    const vk::DeviceAddress bda = device.getBufferAddress(
-        vk::BufferDeviceAddressInfo{.buffer = buffer_res.value});
+    const vk::DeviceAddress bda =
+        device.getBufferAddress(vk::BufferDeviceAddressInfo{.buffer = buffer_res.value});
 
     Buffer result{Buffer::HostImportTag{}, instance, scheduler, base, size};
     result.is_import_backed = true;
@@ -320,7 +318,6 @@ std::optional<Buffer> Buffer::CreateHostImport(const Vulkan::Instance& instance,
     // treating this as a device-local buffer.
     return result;
 }
-
 
 Buffer::Buffer(HostImportTag, const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                VAddr cpu_addr_, u64 size_bytes_)

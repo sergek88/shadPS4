@@ -64,7 +64,7 @@ void MasterSemaphore::Wait(u64 tick) {
     };
 
     Postmortem::HostWaitScope wait_scope{"vkWaitSemaphores", tick,
-                                        gpu_tick.load(std::memory_order_relaxed)};
+                                         gpu_tick.load(std::memory_order_relaxed)};
     while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
     }
     Refresh();

@@ -226,9 +226,9 @@ ImageView& Image::FindView(const ImageViewInfo& view_info_, bool ensure_guest_sa
                 LOG_CRITICAL(Render_Vulkan,
                              "VIEWOOB#{}: addr={:#x} {}x{} lvls={} lyrs={} | view lvl {}+{} lyr "
                              "{}+{} storage={} rt={}",
-                             k, info.guest_address, info.size.width, info.size.height,
-                             res.levels, res.layers, r.base.level, r.extent.levels,
-                             r.base.layer, r.extent.layers, u32(view_info.is_storage),
+                             k, info.guest_address, info.size.width, info.size.height, res.levels,
+                             res.layers, r.base.level, r.extent.levels, r.base.layer,
+                             r.extent.layers, u32(view_info.is_storage),
                              u32(!ensure_guest_samples));
             }
             if (r.base.level >= res.levels) {

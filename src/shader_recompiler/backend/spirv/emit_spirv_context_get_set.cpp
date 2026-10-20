@@ -73,8 +73,7 @@ Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
                                                                : ctx.read_const_live;
         return ctx.OpFunctionCall(ctx.U32[1], fn, addr, offset);
     }
-    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() ||
-        IsDmaMutedByBisect(ctx.info.pgm_hash)) {
+    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || IsDmaMutedByBisect(ctx.info.pgm_hash)) {
         return ctx.EmitFlatbufferLoad(ctx.ConstU32(flatbuf_off_dw));
     }
     // We can only provide a fallback for immediate offsets.

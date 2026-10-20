@@ -346,7 +346,6 @@ public:
     std::atomic<u64> bind_log_tag{0};
 
 private:
-
     void GarbageCollectImages();
     void GarbageCollectSamplers();
 

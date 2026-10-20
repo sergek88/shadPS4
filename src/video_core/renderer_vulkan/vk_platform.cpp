@@ -557,9 +557,9 @@ void DumpRing() {
 }
 } // namespace AddrBind
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL AddrBindCallback(
-    vk::DebugUtilsMessageSeverityFlagBitsEXT, vk::DebugUtilsMessageTypeFlagsEXT,
-    const vk::DebugUtilsMessengerCallbackDataEXT* cb_data, void*) {
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+AddrBindCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT, vk::DebugUtilsMessageTypeFlagsEXT,
+                 const vk::DebugUtilsMessengerCallbackDataEXT* cb_data, void*) {
     // Walk the pNext chain honestly for the address-binding payload.
     const auto* chain = static_cast<const vk::BaseInStructure*>(cb_data->pNext);
     const vk::DeviceAddressBindingCallbackDataEXT* bind = nullptr;
@@ -587,12 +587,15 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL AddrBindCallback(
     if (unbind && base >= 0x2'0000'0000ULL && base < 0x2'0010'0000ULL) {
         AddrBind::unbind_shader_region.fetch_add(1, std::memory_order_relaxed);
     }
-    const u32 i = AddrBind::head.fetch_add(1, std::memory_order_relaxed) & (AddrBind::kRingSize - 1);
+    const u32 i =
+        AddrBind::head.fetch_add(1, std::memory_order_relaxed) & (AddrBind::kRingSize - 1);
     const u32 obj_type =
         cb_data->objectCount ? static_cast<u32>(cb_data->pObjects[0].objectType) : 0u;
     const u64 handle = cb_data->objectCount ? cb_data->pObjects[0].objectHandle : 0ull;
-    AddrBind::ring[i] = {base,   bind->size, unbind ? 1u : 0u, obj_type, handle,
-                         AddrBind::g_draw_tick.load(std::memory_order_relaxed), ev};
+    AddrBind::ring[i] = {
+        base,     bind->size, unbind ? 1u : 0u,
+        obj_type, handle,     AddrBind::g_draw_tick.load(std::memory_order_relaxed),
+        ev};
     // [BINDLOG] live handle -> VA map: the ring forgets binds older than 65536 events (level
     // load), the map does not. Objects are keyed by handle; a handle value is reused by the
     // driver only after the previous object's unbind erased it.

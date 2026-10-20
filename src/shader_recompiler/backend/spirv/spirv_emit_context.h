@@ -153,8 +153,8 @@ public:
         const Id fallback_label = OpLabel();
         const Id merge_label = OpLabel();
 
-        const Id addr = OpFunctionCall(U64, Sirit::ValidId(walker) ? walker : get_bda_pointer,
-                                       address);
+        const Id addr =
+            OpFunctionCall(U64, Sirit::ValidId(walker) ? walker : get_bda_pointer, address);
         const Id is_available = OpINotEqual(U1[1], addr, u64_zero_value);
         OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
         OpBranchConditional(is_available, available_label, fallback_label);
@@ -163,9 +163,9 @@ public:
         // CPU or another GPU queue updates while this dispatch is running.
         AddLabel(available_label);
         const Id addr_ptr = OpConvertUToPtr(physical_pointer_type_u32, addr);
-        const auto access_mask = is_volatile
-                                     ? (spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned)
-                                     : spv::MemoryAccessMask::Aligned;
+        const auto access_mask =
+            is_volatile ? (spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned)
+                        : spv::MemoryAccessMask::Aligned;
         const Id result = OpLoad(U32[1], addr_ptr, access_mask, 4u);
         OpBranch(merge_label);
 
@@ -399,7 +399,8 @@ public:
     /// [BDACACHE] get_bda_pointer wrapped in a one-entry per-invocation translation cache
     /// (SHADPS4_BDACACHE); empty unless the env asked for it.
     Id get_bda_pointer_cached{};
-    Id pj_last_page{};  // [PJCACHE] Private u32: last page this invocation flagged in the page journal
+    Id pj_last_page{};  // [PJCACHE] Private u32: last page this invocation flagged in the page
+                        // journal
     Id bdacache_page{}; // Private u32: page id of the cached entry, 0xFFFFFFFF = nothing cached
     Id bdacache_base{}; // Private u64: the cached page-table entry itself (result - offset)
 
@@ -407,10 +408,10 @@ public:
     Id read_const_dynamic{};
     Id read_const_live{};
     Id read_const_live_x4{}; // [LIVEVEC4] four live dwords through one page-table walk
-    Id read_const_live_nv{};    // [LIVENV] live read without Volatile (data loops of listed workers)
+    Id read_const_live_nv{}; // [LIVENV] live read without Volatile (data loops of listed workers)
     Id read_const_live_x4_nv{}; // [LIVENV] vec4 flavour
-    Id read_const_live_poll{}; // [POLLJ] live read that stamps the polled page (presence window)
-                               // [POLLMAP] and/or marks it in the host-visible poll bitmap
+    Id read_const_live_poll{};  // [POLLJ] live read that stamps the polled page (presence window)
+                                // [POLLMAP] and/or marks it in the host-visible poll bitmap
     Id write_const_live{};
     std::array<Id, 5> write_const_live_x{}; // [LIVEVEC4] live vector store, index = dword count
 

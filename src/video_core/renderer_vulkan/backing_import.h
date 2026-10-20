@@ -138,7 +138,7 @@ private:
         void* host{};
         vk::DeviceMemory memory{}; // null while the chunk is only planned (lazy import)
         u32 type_index{};
-        bool failed{}; // import attempted and refused - do not retry every frame
+        bool failed{};                 // import attempted and refused - do not retry every frame
         vk::Buffer whole{};            // [HOMEPOLICY-PT] one buffer over the entire chunk
         vk::DeviceAddress whole_bda{}; // its device address (0 until created)
     };

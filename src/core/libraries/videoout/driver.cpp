@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
-#include <string>
-#include "common/postmortem.h"
 #include <cstdlib>
+#include <string>
 #include "common/assert.h"
 #include "common/debug.h"
+#include "common/postmortem.h"
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
@@ -262,8 +262,7 @@ void VideoOutDriver::Flip(const Request& req) {
                 break;
             }
             marks += fmt::format(" {}={}ms", n,
-                                 Postmortem::g_startup_marks[i].ms.load(
-                                     std::memory_order_relaxed));
+                                 Postmortem::g_startup_marks[i].ms.load(std::memory_order_relaxed));
         }
         LOG_CRITICAL(Lib_VideoOut, "STARTUP2:{} | modules={} first_flip_at={}ms", marks,
                      Postmortem::g_module_count.load(std::memory_order_relaxed),

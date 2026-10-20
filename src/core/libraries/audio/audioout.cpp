@@ -566,8 +566,8 @@ s32 PS4_SYSV_ABI sceAudioOutOutput(s32 handle, void* ptr) {
     s32 samples_sent = 0;
     {
         static const bool s_aprof = std::getenv("SHADPS4_STUCKLOG") != nullptr;
-        const auto ta0 = s_aprof ? std::chrono::steady_clock::now()
-                                 : std::chrono::steady_clock::time_point{};
+        const auto ta0 =
+            s_aprof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         std::unique_lock lock{port->mutex};
         port->output_cv.wait(lock, [&] { return !port->output_ready || port->closing; });
         if (s_aprof) {

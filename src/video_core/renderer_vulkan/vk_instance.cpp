@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstdlib>
-#include "common/postmortem.h"
-#include <cstring>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <thread>
 #include <utility>
@@ -12,6 +11,7 @@
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include "common/postmortem.h"
 
 #include "common/assert.h"
 #include "common/debug.h"
@@ -29,8 +29,8 @@ namespace Vulkan {
 // [IMPORTPROBE] Manual WinAPI prototypes (no windows.h), same style as FastDieNow in
 // vk_presenter.cpp. Only used by the SHADPS4_IMPORT_PROBE diagnostic path.
 #ifdef _WIN32
-extern "C" __declspec(dllimport) void* __stdcall VirtualAlloc(void*, size_t, unsigned long,
-                                                              unsigned long);
+extern "C"
+    __declspec(dllimport) void* __stdcall VirtualAlloc(void*, size_t, unsigned long, unsigned long);
 extern "C" __declspec(dllimport) int __stdcall VirtualFree(void*, size_t, unsigned long);
 extern "C" __declspec(dllimport) int __stdcall TerminateProcess(void*, unsigned int);
 extern "C" __declspec(dllimport) void* __stdcall GetCurrentProcess();
@@ -57,8 +57,8 @@ struct ProbeChunk {
 
 // Import one chunk of `size` bytes (aligned up to `align`). Returns true and fills `out` on
 // success; false with `err` set on any failure (all intermediate resources released).
-bool ProbeImportChunk(vk::PhysicalDevice pdev, vk::Device dev, u64 size, u64 align,
-                      ProbeChunk& out, vk::Result& err) {
+bool ProbeImportChunk(vk::PhysicalDevice pdev, vk::Device dev, u64 size, u64 align, ProbeChunk& out,
+                      vk::Result& err) {
     const u64 asize = (size + align - 1) & ~(align - 1);
     void* host =
         VirtualAlloc(nullptr, asize, PROBE_MEM_RESERVE | PROBE_MEM_COMMIT, PROBE_PAGE_READWRITE);
@@ -158,13 +158,15 @@ void RunImportProbe(vk::PhysicalDevice pdev, vk::Device dev, u64 align, bool has
         for (u32 i = 0; i < mp.memoryHeapCount; ++i) {
             const bool dev_local =
                 static_cast<bool>(mp.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal);
-            LOG_CRITICAL(Render_Vulkan,
-                         "IMPORTPROBE: heap[{}] size={} MB budget={} MB usage={} MB device_local={}",
-                         i, mp.memoryHeaps[i].size / MB, budget.heapBudget[i] / MB,
-                         budget.heapUsage[i] / MB, dev_local ? 1 : 0);
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "IMPORTPROBE: heap[{}] size={} MB budget={} MB usage={} MB device_local={}", i,
+                mp.memoryHeaps[i].size / MB, budget.heapBudget[i] / MB, budget.heapUsage[i] / MB,
+                dev_local ? 1 : 0);
         }
     } else {
-        LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: VK_EXT_memory_budget unsupported, skipping phase 0");
+        LOG_CRITICAL(Render_Vulkan,
+                     "IMPORTPROBE: VK_EXT_memory_budget unsupported, skipping phase 0");
     }
     if (!has_ext || align == 0) {
         LOG_CRITICAL(Render_Vulkan,
@@ -368,7 +370,8 @@ void LogHeapBudget(vk::PhysicalDevice pdev, bool has_budget, const char* tag) {
     for (u32 i = 0; i < mp.memoryHeapCount; ++i) {
         const bool dev_local =
             static_cast<bool>(mp.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal);
-        LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: {} heap[{}] size={} MB budget={} MB usage={} MB device_local={}",
+        LOG_CRITICAL(Render_Vulkan,
+                     "GUESTPROBE: {} heap[{}] size={} MB budget={} MB usage={} MB device_local={}",
                      tag, i, mp.memoryHeaps[i].size / MB, budget.heapBudget[i] / MB,
                      budget.heapUsage[i] / MB, dev_local ? 1 : 0);
     }
@@ -437,9 +440,10 @@ void RunGuestProbe(vk::PhysicalDevice pdev, vk::Device dev, u64 align, bool has_
     bool first_fail_logged = false;
 
     const auto type_name = [](unsigned long t) -> const char* {
-        return t == MEM_PRIVATE ? "private" : t == MEM_MAPPED ? "mapped"
-                                          : t == MEM_IMAGE     ? "image"
-                                                              : "other";
+        return t == MEM_PRIVATE  ? "private"
+               : t == MEM_MAPPED ? "mapped"
+               : t == MEM_IMAGE  ? "image"
+                                 : "other";
     };
 
     // [v3 SKIP-ON-FAIL] Walk each region; import in 16 MB pieces. On the FIRST failure inside a
@@ -912,8 +916,7 @@ bool Instance::CreateDevice() {
                      std::strcmp(e, "1") == 0);
     }();
     const u32 family_queue_count = family_properties[queue_family_index].queueCount;
-    const u32 wanted_queues =
-        std::min<u32>(spin_wants_rescue_queue ? 4 : 3, family_queue_count);
+    const u32 wanted_queues = std::min<u32>(spin_wants_rescue_queue ? 4 : 3, family_queue_count);
     separate_present_queue = wanted_queues >= 2;
     const vk::DeviceQueueCreateInfo queue_info = {
         .queueFamilyIndex = queue_family_index,
@@ -1177,8 +1180,9 @@ bool Instance::CreateDevice() {
     }
 
     // [IMPORTPROBE] SHADPS4_IMPORT_PROBE: measure the raw imported-host-memory ceiling right after
-    // device creation, BEFORE any LABELUMA seeds are imported (so the measurement starts from zero).
-    // Env-gated: absent -> no effect on the live path. 1 = probe and continue, 2 = probe and exit.
+    // device creation, BEFORE any LABELUMA seeds are imported (so the measurement starts from
+    // zero). Env-gated: absent -> no effect on the live path. 1 = probe and continue, 2 = probe and
+    // exit.
 #ifdef _WIN32
     if (const char* pe = std::getenv("SHADPS4_IMPORT_PROBE")) {
         // Private-probe delay + phase-1 cap knobs (guest branch keeps its own default-30 delay).
@@ -1212,10 +1216,11 @@ bool Instance::CreateDevice() {
                 LOG_CRITICAL(Render_Vulkan,
                              "IMPORTPROBE: scheduled (mode {}), delay {}s, align={} cap={} MB",
                              probe_mode, d, align, cap_mb);
-                import_probe_thread = std::jthread([pdev, dev, align, has_ext, has_budget, probe_mode,
-                                                    d, cap_mb](std::stop_token) {
+                import_probe_thread = std::jthread([pdev, dev, align, has_ext, has_budget,
+                                                    probe_mode, d, cap_mb](std::stop_token) {
                     std::this_thread::sleep_for(std::chrono::seconds(d));
-                    LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: start (deferred, mode {})", probe_mode);
+                    LOG_CRITICAL(Render_Vulkan, "IMPORTPROBE: start (deferred, mode {})",
+                                 probe_mode);
                     RunImportProbe(pdev, dev, align, has_ext, has_budget, probe_mode, cap_mb);
                 });
             }
@@ -1236,10 +1241,10 @@ bool Instance::CreateDevice() {
             const bool has_budget = supports_memory_budget;
             LOG_CRITICAL(Render_Vulkan, "GUESTPROBE: scheduled (mode {}), delay {}s, align={}",
                          probe_mode, delay_s, align);
-            import_probe_thread = std::jthread([pdev, dev, align, has_ext, has_budget, probe_mode,
-                                                delay_s](std::stop_token) {
-                RunGuestProbe(pdev, dev, align, has_ext, has_budget, probe_mode, delay_s);
-            });
+            import_probe_thread = std::jthread(
+                [pdev, dev, align, has_ext, has_budget, probe_mode, delay_s](std::stop_token) {
+                    RunGuestProbe(pdev, dev, align, has_ext, has_budget, probe_mode, delay_s);
+                });
         }
     }
 #endif

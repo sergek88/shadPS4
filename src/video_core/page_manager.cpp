@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <mutex>
+#include <vector>
 #include <boost/container/small_vector.hpp>
 #include "common/assert.h"
 #include "common/debug.h"
@@ -9,12 +15,6 @@
 #include "common/signal_context.h"
 #include "core/memory.h"
 #include "core/signals.h"
-#include <atomic>
-#include <algorithm>
-#include <vector>
-#include <mutex>
-#include <chrono>
-#include <cstdlib>
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
@@ -262,8 +262,8 @@ struct PageManager::Impl {
             s64 next = s_next_ms.load(std::memory_order_relaxed);
             if (now_ms >= next && s_next_ms.compare_exchange_strong(next, now_ms + 5000)) {
                 if (next != 0) {
-                    LOG_CRITICAL(Render_Vulkan, "PROTECT: {} calls, {} MB in 5s",
-                                 calls, s_bytes.load() >> 20);
+                    LOG_CRITICAL(Render_Vulkan, "PROTECT: {} calls, {} MB in 5s", calls,
+                                 s_bytes.load() >> 20);
                 }
                 s_calls.store(0, std::memory_order_relaxed);
                 s_bytes.store(0, std::memory_order_relaxed);

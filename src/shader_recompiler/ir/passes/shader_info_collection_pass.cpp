@@ -93,7 +93,7 @@ void Visit(Info& info, const IR::Inst& inst) {
     case IR::Opcode::WriteLane:
         info.uses_group_ballot = true;
         break;
-    case IR::Opcode::Barrier:                // [CSSPLIT] OpControlBarrier(Workgroup): group-shape bound
+    case IR::Opcode::Barrier: // [CSSPLIT] OpControlBarrier(Workgroup): group-shape bound
     case IR::Opcode::WorkgroupMemoryBarrier: // [CSSPLIT] only meaningful with LDS, declined anyway
         // DeviceMemoryBarrier (S_WAITCNT under SHADPS4_WAITCNT_FENCE) is deliberately not counted:
         // a device-scope fence does not depend on the workgroup shape.

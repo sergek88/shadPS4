@@ -27,12 +27,12 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdio>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -58,7 +58,7 @@ struct CoverInfo {
     bool found;
 };
 CoverInfo DumpCovering(u64 addr);
-}
+} // namespace Vulkan::AddrBind
 namespace Vulkan::BindLog {
 void Dump(); // vk_rasterizer.cpp
 }
@@ -91,8 +91,8 @@ static void DumpNvCheckpointsImpl(const Instance& instance) {
     }
     const auto checkpoints = instance.GetGraphicsQueue().getCheckpointDataNV();
     for (const auto& cp : checkpoints) {
-        LOG_CRITICAL(Render_Vulkan, "CHECKPOINT: stage={} marker={:#x}",
-                     vk::to_string(cp.stage), reinterpret_cast<u64>(cp.pCheckpointMarker));
+        LOG_CRITICAL(Render_Vulkan, "CHECKPOINT: stage={} marker={:#x}", vk::to_string(cp.stage),
+                     reinterpret_cast<u64>(cp.pCheckpointMarker));
     }
 }
 
@@ -147,7 +147,8 @@ void DumpDeviceFaultImpl(const Instance& instance) {
         const auto cover = Vulkan::AddrBind::DumpCovering(addrs[i].reportedAddress);
         if (cover.found) {
             LOG_CRITICAL(Render_Vulkan, "DEVFAULT range[{}] {:#x}+{:#x}: {}", i, cover.base,
-                         cover.size, VideoCore::BufferCache::DescribeHostRange(cover.base, cover.size));
+                         cover.size,
+                         VideoCore::BufferCache::DescribeHostRange(cover.base, cover.size));
         }
     }
     // [FREEIMG-RING] the last image deletions: match the unbound VkImage handle above by eye.
@@ -629,8 +630,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
                EmulatorSettings.IsVkCrashDiagnosticEnabled()},
       draw_scheduler{instance}, present_scheduler{instance, /*use_present_queue=*/true},
-      flip_scheduler{instance, /*use_present_queue=*/true},
-      swapchain{instance, window},
+      flip_scheduler{instance, /*use_present_queue=*/true}, swapchain{instance, window},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
     const u32 num_images = swapchain.GetImageCount();
@@ -853,8 +853,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         ++s_df_frames;
         if (s_shot_every != 0 && s_df_frames % s_shot_every == 0 &&
             s_df_frames / s_shot_every <= 24) {
-            LOG_CRITICAL(Render_Vulkan, "AUTOCAPTURE: RenderDoc shot at DF frame {}",
-                         s_df_frames);
+            LOG_CRITICAL(Render_Vulkan, "AUTOCAPTURE: RenderDoc shot at DF frame {}", s_df_frames);
             VideoCore::TriggerCapture();
         }
     }
@@ -866,11 +865,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         static u32 s_cnt = 0;
         if (s_flog && (++s_cnt % 60) == 0) {
             auto& img = texture_cache.GetImage(image_id);
-            LOG_WARNING(Render_Vulkan,
-                        "PRESIMG: addr={:#x} id={} fmt={} {}x{} gpu_mod={}",
-                        cpu_address, image_id.index,
-                        vk::to_string(img.info.pixel_format), img.info.size.width,
-                        img.info.size.height,
+            LOG_WARNING(Render_Vulkan, "PRESIMG: addr={:#x} id={} fmt={} {}x{} gpu_mod={}",
+                        cpu_address, image_id.index, vk::to_string(img.info.pixel_format),
+                        img.info.size.width, img.info.size.height,
                         True(img.flags & VideoCore::ImageFlagBits::GpuModified));
         }
     }
@@ -1369,8 +1366,7 @@ Frame* Presenter::GetRenderFrame() {
         // Retry if the waiting times out
         if (result == vk::Result::eTimeout) {
             if (++timeouts % 30 == 0) {
-                LOG_WARNING(Render_Vulkan, "Present fence still busy after {} s",
-                            timeouts / 10);
+                LOG_WARNING(Render_Vulkan, "Present fence still busy after {} s", timeouts / 10);
             }
             if (timeouts == 300) {
                 // 30 s of a wedged fence: dump the dispatch tail so the log
@@ -1392,8 +1388,7 @@ Frame* Presenter::GetRenderFrame() {
                     }
                     const auto pr = dev.waitForFences(probe, true, 2'000'000'000ULL);
                     LOG_CRITICAL(Render_Vulkan, "DEVPROBE q{}: {}", qi,
-                                 pr == vk::Result::eSuccess ? "DRAINED"
-                                                            : vk::to_string(pr));
+                                 pr == vk::Result::eSuccess ? "DRAINED" : vk::to_string(pr));
                     if (pr == vk::Result::eSuccess) {
                         dev.destroyFence(probe);
                     }

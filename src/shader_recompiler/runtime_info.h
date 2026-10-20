@@ -222,7 +222,8 @@ struct ComputeRuntimeInfo {
     // [CSSPLIT] what the backend actually applied (0 = declined/off). Not part of the key; the
     // pipeline cache stamps it into the permutation's spec after the compile and the dispatch
     // multiplies dim_x by 1<<eff of the permutation it binds - module and grid share one record.
-    // Both fields live in the union padding: sizeof(RuntimeInfo) and the raw spec blob are unchanged.
+    // Both fields live in the union padding: sizeof(RuntimeInfo) and the raw spec blob are
+    // unchanged.
     u8 cssplit_eff_log2;
 
     bool operator==(const ComputeRuntimeInfo& other) const noexcept {

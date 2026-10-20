@@ -3,14 +3,14 @@
 
 #pragma once
 
-#include <cstdlib>
-#include <functional>
-#include <map>
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <memory>
 #include <condition_variable>
+#include <cstdlib>
+#include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <stop_token>
@@ -78,10 +78,10 @@ extern thread_local u64 g_bind_pgm_hash;
 
 namespace HomePolicy {
 bool Enabled();
-bool WantsImport(VAddr addr, u64 size); // any listed page inside the range
-bool WantsPt(VAddr addr, u64 size);     // [HOMEPOLICY-PT] any page-table-redirect page inside
+bool WantsImport(VAddr addr, u64 size);   // any listed page inside the range
+bool WantsPt(VAddr addr, u64 size);       // [HOMEPOLICY-PT] any page-table-redirect page inside
 bool StaticWantsPt(VAddr addr, u64 size); // [POLLMAP v3.2] static list only
-u64 CoveredBytes(VAddr addr, u64 size); // listed bytes inside the range (union detection)
+u64 CoveredBytes(VAddr addr, u64 size);   // listed bytes inside the range (union detection)
 std::vector<std::pair<VAddr, u64>> Ranges();
 void Subtract(VAddr addr, u64 size); // guest unmap
 } // namespace HomePolicy
@@ -495,8 +495,7 @@ public:
     /// Obtains a buffer for the specified region.
     [[nodiscard]] std::pair<Buffer*, u32> ObtainBuffer(VAddr gpu_addr, u32 size, bool is_written,
                                                        bool is_texel_buffer = false,
-                                                       BufferId buffer_id = {},
-                                                       u32 sync_limit = 0);
+                                                       BufferId buffer_id = {}, u32 sync_limit = 0);
 
     /// Attempts to obtain a buffer without modifying the cache contents.
     [[nodiscard]] std::pair<Buffer*, u32> ObtainBufferForImage(VAddr gpu_addr, u32 size);
@@ -601,15 +600,16 @@ private:
     // [TDR SPINWATCH/SPINSNAP] Spin-rescue diagnostic contour. Never takes serve_mutex, never
     // touches rb_pool, never calls Register/CreateBuffer/FindBuffer/texture_cache/SendCommand/
     // Refresh. Own command pool/fence/staging + a private probe compute pipeline.
-    void SpinRescueInit();                                  // build resources + start thread (ctor)
-    void SpinRescueLoop(std::stop_token stop);              // 10ms watchdog on the semaphore counter
-    void SpinRescueSnapshot(u64 gpu_tick, u64 stalled_ms);  // snoop: cross-queue fault-bitmap snap
-    bool SpinSubmitWait(u64 timeout_ns);                    // submit spin_cmdbuf to rescue queue+wait
+    void SpinRescueInit();                                 // build resources + start thread (ctor)
+    void SpinRescueLoop(std::stop_token stop);             // 10ms watchdog on the semaphore counter
+    void SpinRescueSnapshot(u64 gpu_tick, u64 stalled_ms); // snoop: cross-queue fault-bitmap snap
+    bool SpinSubmitWait(u64 timeout_ns); // submit spin_cmdbuf to rescue queue+wait
     // [TDR ETAP4/5] import (no publish) + pt_patch publish. Called only from the rescue thread.
     void SpinImportAndPublish(std::span<const u64> pages, u64 gpu_tick);
     bool SpinReadDeviceEntry(u64 page, vk::DeviceAddress& out); // copy 8B table entry via rescue q
-    bool SpinPatchEntries(const boost::container::small_vector<std::pair<u64, vk::DeviceAddress>, 32>&
-                              entries);                          // pt_patch atomicStore, rescue q
+    bool SpinPatchEntries(
+        const boost::container::small_vector<std::pair<u64, vk::DeviceAddress>, 32>&
+            entries); // pt_patch atomicStore, rescue q
 
 public:
     /// [TDR ETAP5] Live rescue-import BDA for a guest page (bda+offset), or 0 if none. Lifecycle
@@ -626,7 +626,6 @@ public:
     void SpinReleaseImports(VAddr addr, u64 size);
 
 private:
-
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
     AmdGpu::Liverpool* liverpool;
@@ -749,25 +748,25 @@ private:
     u64 const_cache_wrap = ~0ull;
 
     // [TDR SPINWATCH/SPINSNAP] Rescue contour state. Own resources only - never rb_pool.
-    bool spin_enabled = false;         // detect+ (watchdog running)
-    bool spin_snoop = false;           // snoop+ (needs the dedicated rescue queue)
-    u32 spin_stall_ms = 300;           // SHADPS4_SPINRESCUE_MS
+    bool spin_enabled = false; // detect+ (watchdog running)
+    bool spin_snoop = false;   // snoop+ (needs the dedicated rescue queue)
+    u32 spin_stall_ms = 300;   // SHADPS4_SPINRESCUE_MS
     vk::UniqueCommandPool spin_cmd_pool;
     vk::UniqueCommandBuffer spin_cmdbuf;
     vk::UniqueFence spin_fence;
-    std::unique_ptr<Buffer> spin_staging;     // Download: fault_buffer_size + 4KB
-    std::unique_ptr<Buffer> spin_probe_buf;   // tiny host-visible SSBO for the probe atomicAdd
+    std::unique_ptr<Buffer> spin_staging;   // Download: fault_buffer_size + 4KB
+    std::unique_ptr<Buffer> spin_probe_buf; // tiny host-visible SSBO for the probe atomicAdd
     vk::UniqueDescriptorSetLayout spin_probe_layout;
     vk::UniquePipelineLayout spin_probe_pl_layout;
     vk::UniquePipeline spin_probe_pipeline;
     // [TDR ETAP4] import registry + budget/ratchet. Leaf lock order:
     // buffers_mutex -> gpu_modified_mutex -> spin_import_mutex.
-    bool spin_import_mode = false;            // import+ (build host imports)
-    bool spin_full = false;                   // full: publish via pt_patch (int64 atomics present)
-    u64 spin_budget_bytes = 8ull << 20;       // SHADPS4_SPINRESCUE_BUDGET_MB
-    u64 spin_maxrun_bytes = 256ull << 10;     // SHADPS4_SPINRESCUE_MAXRUN_KB
-    u64 spin_imported_bytes = 0;              // live imported bytes (session budget)
-    u32 spin_incident_imports = 0;            // imports this stall incident (<=16)
+    bool spin_import_mode = false;        // import+ (build host imports)
+    bool spin_full = false;               // full: publish via pt_patch (int64 atomics present)
+    u64 spin_budget_bytes = 8ull << 20;   // SHADPS4_SPINRESCUE_BUDGET_MB
+    u64 spin_maxrun_bytes = 256ull << 10; // SHADPS4_SPINRESCUE_MAXRUN_KB
+    u64 spin_imported_bytes = 0;          // live imported bytes (session budget)
+    u32 spin_incident_imports = 0;        // imports this stall incident (<=16)
     std::mutex spin_import_mutex;
     struct SpinImport {
         VAddr base;
@@ -777,11 +776,11 @@ private:
         // neither counted into spin_imported_bytes nor subtracted on release.
         bool backing;
     };
-    std::map<VAddr, SpinImport> spin_imports;  // keyed by aligned base
+    std::map<VAddr, SpinImport> spin_imports;              // keyed by aligned base
     std::vector<std::unique_ptr<Buffer>> spin_import_bufs; // keep-alive (bounded by budget)
-    std::unordered_map<u64, u32> spin_ratchet; // page -> heals without tick progress
+    std::unordered_map<u64, u32> spin_ratchet;             // page -> heals without tick progress
     // [TDR ETAP5] pt_patch publication pipeline (64-bit atomicStore into bda_pagetable_buffer).
-    std::unique_ptr<Buffer> spin_params_buf;   // Upload: u32 count + {page_idx, lo, hi}[256]
+    std::unique_ptr<Buffer> spin_params_buf; // Upload: u32 count + {page_idx, lo, hi}[256]
     vk::UniqueDescriptorSetLayout spin_patch_layout;
     vk::UniquePipelineLayout spin_patch_pl_layout;
     vk::UniquePipeline spin_patch_pipeline;
@@ -824,8 +823,8 @@ private:
     std::vector<VAddr> vram_auto_blocks;      // pending, from the fault-parse thread
     std::vector<VAddr> vram_auto_done_blocks; // already turned into ranges
     std::mutex pagej_mutex;
-    std::vector<VAddr> pagej_sticky;   // pages seen in the page journal (VRAM-owned), deduped
-    std::vector<VAddr> pagej_new;      // noted since the last sticky step
+    std::vector<VAddr> pagej_sticky; // pages seen in the page journal (VRAM-owned), deduped
+    std::vector<VAddr> pagej_new;    // noted since the last sticky step
     u64 pagej_sticky_marks = 0;
     struct DualPiece {
         VAddr base;
@@ -849,25 +848,25 @@ private:
     // guard page after the last slot so a 16-byte over-read at the end of the last slot stays
     // inside the buffer.
     struct SkinVram {
-        std::vector<u64> hashes;               // SHADPS4_SKINVRAM
-        VAddr synth_base = 0xFF00000000ULL;    // SHADPS4_SKINVRAM_BASE (hex), 16 KiB aligned
-        u64 ring_bytes = u64{128} << 20;       // SHADPS4_SKINVRAM_MB (allocatable part)
-        u64 slot_bytes = u64{128} << 10;       // SHADPS4_SKINVRAM_SLOT_KB (multiple of 16 KiB)
-        u32 num_slots = 1024;                  // ring_bytes / slot_bytes
-        bool verbose = false;                  // SHADPS4_SKINVRAM_LOG=1
-        bool verify = false;                   // SHADPS4_SKINVRAM_VERIFY=1 (staleness self-check)
-        bool gpumod_allow = false;             // SHADPS4_SKINVRAM_GPUMOD=allow (count, don't skip)
-        bool config_ok = false;                // geometry + refusals checked in the ctor
+        std::vector<u64> hashes;            // SHADPS4_SKINVRAM
+        VAddr synth_base = 0xFF00000000ULL; // SHADPS4_SKINVRAM_BASE (hex), 16 KiB aligned
+        u64 ring_bytes = u64{128} << 20;    // SHADPS4_SKINVRAM_MB (allocatable part)
+        u64 slot_bytes = u64{128} << 10;    // SHADPS4_SKINVRAM_SLOT_KB (multiple of 16 KiB)
+        u32 num_slots = 1024;               // ring_bytes / slot_bytes
+        bool verbose = false;               // SHADPS4_SKINVRAM_LOG=1
+        bool verify = false;                // SHADPS4_SKINVRAM_VERIFY=1 (staleness self-check)
+        bool gpumod_allow = false;          // SHADPS4_SKINVRAM_GPUMOD=allow (count, don't skip)
+        bool config_ok = false;             // geometry + refusals checked in the ctor
         bool init_tried = false;
         bool ok = false;
-        std::atomic<bool> clobbered{false};    // guest mapped / buffer registered over the window
-        std::unique_ptr<Buffer> ring;          // ring_bytes + CACHING_PAGESIZE, created in the ctor
-        bool host_ring = false;                // ring is DEVICE_LOCAL *and* host-mapped (ReBAR)
+        std::atomic<bool> clobbered{false}; // guest mapped / buffer registered over the window
+        std::unique_ptr<Buffer> ring;       // ring_bytes + CACHING_PAGESIZE, created in the ctor
+        bool host_ring = false;             // ring is DEVICE_LOCAL *and* host-mapped (ReBAR)
         vk::DeviceAddress ring_bda = 0;
-        std::vector<u64> slot_tick;            // per slot: tick of the cmdbuf reading it (0 = never)
+        std::vector<u64> slot_tick; // per slot: tick of the cmdbuf reading it (0 = never)
         u32 next_slot = 0;
-        s32 pending_slot = -1;                 // slot of the dispatch being recorded
-        std::vector<u8> scratch;               // CPU image of the slot prefix
+        s32 pending_slot = -1;   // slot of the dispatch being recorded
+        std::vector<u8> scratch; // CPU image of the slot prefix
         u64 wraps = 0;
         enum Skip : u32 {
             UdMask = 0,
@@ -877,8 +876,8 @@ private:
             RingBusy,
             Staging,
             Clobbered,
-            GpuAuth,   // a range's authority is the GPU's copy, guest RAM would be stale
-            ShortHdr,  // vertex count exceeds the header array the V# declares
+            GpuAuth,  // a range's authority is the GPU's copy, guest RAM would be stale
+            ShortHdr, // vertex count exceeds the header array the V# declares
             NumSkips
         };
         u64 redirected = 0;
@@ -934,9 +933,9 @@ private:
         // reused across frames, so the set converges to the worker's output arena.
         RangeSet out_ranges;
         bool out_armed = false;
-        u64 out_stream_skips = 0;  // ObtainBuffer: cache path instead of the stream copy
-        u64 out_snapro_skips = 0;  // ObtainBuffer: SNAPRO shadow refused for an output
-        u64 out_vtx_barriers = 0;  // BindVertexBuffers: barrier requested by the set alone
+        u64 out_stream_skips = 0; // ObtainBuffer: cache path instead of the stream copy
+        u64 out_snapro_skips = 0; // ObtainBuffer: SNAPRO shadow refused for an output
+        u64 out_vtx_barriers = 0; // BindVertexBuffers: barrier requested by the set alone
         // [VERIFY] ring of the last converted output binds, GPU thread only
         struct Out {
             VAddr base;
@@ -948,9 +947,9 @@ private:
         u32 ring_n = 0;
         VAddr ring_lo = ~VAddr{0};
         VAddr ring_hi = 0;
-        u64 uploads_in_output = 0; // guest-RAM upload landed inside an output bound earlier
-        u64 consumer_hits = 0;     // vertex-buffer bind overlapping a converted output
-        u64 consumer_stream = 0;   // ...served from the stream buffer (record-time snapshot)
+        u64 uploads_in_output = 0;  // guest-RAM upload landed inside an output bound earlier
+        u64 consumer_hits = 0;      // vertex-buffer bind overlapping a converted output
+        u64 consumer_stream = 0;    // ...served from the stream buffer (record-time snapshot)
         u64 consumer_nobarrier = 0; // ...with no GPU-modified mark, i.e. no barrier requested
         u32 logged_uploads = 0;
     } skind;

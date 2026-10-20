@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstdlib>
 #include <chrono>
+#include <cstdlib>
 #include "common/postmortem.h"
 #include "gnm_error.h"
 #include "gnmdriver.h"
@@ -138,10 +138,10 @@ static std::atomic<u64> flips_requested{};
 // [debug] SHADPS4_RIPSAMPLER=1: раз в 3с логируем RIP гостевых потоков —
 // повторяющийся адрес = спин-цикл, который держит кадр.
 #ifdef _WIN64
-#include <windows.h>
-#include <tlhelp32.h>
 #include <dbghelp.h>
 #include <psapi.h>
+#include <tlhelp32.h>
+#include <windows.h>
 #pragma comment(lib, "dbghelp.lib")
 static void RipSamplerThread() {
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
@@ -171,8 +171,8 @@ static void RipSamplerThread() {
                 PWSTR desc = nullptr;
                 std::string name;
                 if (SUCCEEDED(GetThreadDescription(h, &desc)) && desc) {
-                    int len = WideCharToMultiByte(CP_UTF8, 0, desc, -1, nullptr, 0, nullptr,
-                                                  nullptr);
+                    int len =
+                        WideCharToMultiByte(CP_UTF8, 0, desc, -1, nullptr, 0, nullptr, nullptr);
                     if (len > 1) {
                         name.resize(len - 1);
                         WideCharToMultiByte(CP_UTF8, 0, desc, -1, name.data(), len, nullptr,
@@ -222,10 +222,9 @@ static void RipSamplerThread() {
                             sf.AddrStack.Offset = ctx.Rsp;
                             CONTEXT wctx = ctx;
                             for (int depth = 0; depth < 24; ++depth) {
-                                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(),
-                                                 h, &sf, &wctx, nullptr,
-                                                 SymFunctionTableAccess64, SymGetModuleBase64,
-                                                 nullptr)) {
+                                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), h,
+                                                 &sf, &wctx, nullptr, SymFunctionTableAccess64,
+                                                 SymGetModuleBase64, nullptr)) {
                                     break;
                                 }
                                 const u64 pc = sf.AddrPC.Offset;
@@ -1665,7 +1664,7 @@ s32 PS4_SYSV_ABI sceGnmSetEmbeddedPsShader(u32* cmdbuf, u32 size, u32 shader_id,
 
     constexpr static std::array ps1_code alignas(256) = {
         0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
-        0x7e040280u,              // v_mov_b32     v2, 0 
+        0x7e040280u,              // v_mov_b32     v2, 0
         0xf8001803u, 0x02020202u, // exp           mrt0, v2, v2, off, off vm done
         0xbf810000u,              // s_endpgm
 
@@ -2389,8 +2388,8 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffersForWorkload(
     if (patch_result != ORBIS_OK) {
         return patch_result;
     }
-    Postmortem::g_flips_requested.store(
-        flips_requested.fetch_add(1, std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    Postmortem::g_flips_requested.store(flips_requested.fetch_add(1, std::memory_order_relaxed) + 1,
+                                        std::memory_order_relaxed);
 
     return sceGnmSubmitCommandBuffers(count, const_cast<const u32**>(dcb_gpu_addrs),
                                       dcb_sizes_in_bytes, const_cast<const u32**>(ccb_gpu_addrs),
@@ -2580,8 +2579,7 @@ int PS4_SYSV_ABI sceGnmSubmitDone() {
                     : 0;
             s_prev = now;
             const auto w0 = clk::now();
-            liverpool->WaitForFramePacing(
-                flips_requested.load(std::memory_order_relaxed));
+            liverpool->WaitForFramePacing(flips_requested.load(std::memory_order_relaxed));
             const auto wait_ms =
                 std::chrono::duration_cast<std::chrono::milliseconds>(clk::now() - w0).count();
             if (interval_ms > 1000 || wait_ms > 500) {
@@ -2592,8 +2590,7 @@ int PS4_SYSV_ABI sceGnmSubmitDone() {
                             liverpool->IsGfxStalledOnGuestLabel());
             }
         } else {
-            liverpool->WaitForFramePacing(
-                flips_requested.load(std::memory_order_relaxed));
+            liverpool->WaitForFramePacing(flips_requested.load(std::memory_order_relaxed));
         }
     }
     send_init_packet = true;

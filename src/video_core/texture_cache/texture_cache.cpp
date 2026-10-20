@@ -1,23 +1,22 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <atomic>
-#include <algorithm>
-#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <ranges>
 #include <unordered_map>
-#include <chrono>
 #include <xxhash.h>
 
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
-#include "common/scope_exit.h"
 #include "common/postmortem.h"
+#include "common/scope_exit.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -109,12 +108,13 @@ void Dump() {
     LOG_CRITICAL(Render_Vulkan, "FINDLOG: total={} showing last {}", total, n);
     for (size_t k = 0; k < n; k++) {
         const auto& e = ring[(head + kSize - n + k) % kSize];
-        LOG_CRITICAL(Render_Vulkan,
-                     "FINDLOG[{}]: tag={:#x} want={:#x}+{:#x} {}x{} lvls={} -> slot={} got={:#x}+{:#x} "
-                     "{}x{} lvls={} fmt={} view(lvl={} lvls={}) mip={} slice={}",
-                     k, e.tag, e.want_addr, e.want_size, e.want_w, e.want_h, e.want_lvls, e.slot,
-                     e.got_addr, e.got_size, e.got_w, e.got_h, e.got_lvls, e.fmt, e.view_lvl,
-                     e.view_lvls, e.view_mip, e.view_slice);
+        LOG_CRITICAL(
+            Render_Vulkan,
+            "FINDLOG[{}]: tag={:#x} want={:#x}+{:#x} {}x{} lvls={} -> slot={} got={:#x}+{:#x} "
+            "{}x{} lvls={} fmt={} view(lvl={} lvls={}) mip={} slice={}",
+            k, e.tag, e.want_addr, e.want_size, e.want_w, e.want_h, e.want_lvls, e.slot, e.got_addr,
+            e.got_size, e.got_w, e.got_h, e.got_lvls, e.fmt, e.view_lvl, e.view_lvls, e.view_mip,
+            e.view_slice);
     }
 }
 } // namespace VideoCore::FindLog
@@ -236,76 +236,70 @@ void Report() {
     if (expected == 0) {
         return;
     }
-    LOG_CRITICAL(Render_Vulkan,
-                 "TEXSTAT new={} free={} ovl_fail={} | refresh={} upload={} empty={} "
-                 "skip={} | EXPAND={} expand_MB={} chance_free={} depth_ovl={} | GC_runs={} "
-                 "GC_free={} vram_MB={} trigger_MB={} | FREE blockdim={} tile={} "
-                 "left_target={} copymip={} | uploaded_MB={} reuploads={} | ring_hits={} "
-                 "ring_hits_left={} ring_mipfail={} ring_migrate={} ring_migrate_left={} | "
-                 "depth_recreate={} stencil_new={} | "
-                 "pool hit={} adopt={}/{} evict={} demote={} cpuskip={} carve={} wbdead={} depth_adopt={} depth_hit={} | "
-                 "TEXTIME hash_us={} copy_us={} detile_us={} create_us={} overlap_us={}",
-                 img_new.exchange(0), img_free.exchange(0), overlap_fail.exchange(0),
-                 refresh_total.exchange(0), refresh_upload.exchange(0), refresh_empty.exchange(0),
-                 refresh_skip_gpu.exchange(0), expand.exchange(0),
-                 expand_bytes.exchange(0) >> 20, free_chance.exchange(0),
-                 depth_overlap.exchange(0), gc_runs.exchange(0), gc_free.exchange(0),
-                 mem_used.load() >> 20, mem_trigger.load() >> 20, f_blockdim.exchange(0),
-                 f_tile.exchange(0), f_left_target.exchange(0), f_copymip.exchange(0),
-                 upload_bytes.exchange(0) >> 20,
-                 [] {
-                     std::scoped_lock lk{seen_mutex};
-                     u64 n = 0;
-                     for (const auto& [addr, count] : seen_uploads) {
-                         if (count > 1) {
-                             n += count - 1;
-                         }
-                     }
-                     seen_uploads.clear();
-                     return n;
-                 }(),
-                 ring_hits.load(std::memory_order_relaxed),
-                 ring_hits_left.load(std::memory_order_relaxed),
-                 ring_mipfail.load(std::memory_order_relaxed),
-                 ring_migrate.load(std::memory_order_relaxed),
-                 ring_migrate_left.load(std::memory_order_relaxed),
-                 depth_recreate.load(std::memory_order_relaxed),
-                 stencil_new.load(std::memory_order_relaxed), pool_hits.load(),
-                 pool_adopt.load(), pool_adopt_reject.load(), pool_evict.load(),
-                 pool_demote.load(), pool_cpuskip.load(), pool_carveout.load(),
-                 pool_wb_dead.load(), pool_depth_adopt.load(), pool_depth_hit.load(), hash_us.exchange(0),
-                 copy_us.exchange(0), detile_us.exchange(0), create_us.exchange(0),
-                 overlap_us.exchange(0));
+    LOG_CRITICAL(
+        Render_Vulkan,
+        "TEXSTAT new={} free={} ovl_fail={} | refresh={} upload={} empty={} "
+        "skip={} | EXPAND={} expand_MB={} chance_free={} depth_ovl={} | GC_runs={} "
+        "GC_free={} vram_MB={} trigger_MB={} | FREE blockdim={} tile={} "
+        "left_target={} copymip={} | uploaded_MB={} reuploads={} | ring_hits={} "
+        "ring_hits_left={} ring_mipfail={} ring_migrate={} ring_migrate_left={} | "
+        "depth_recreate={} stencil_new={} | "
+        "pool hit={} adopt={}/{} evict={} demote={} cpuskip={} carve={} wbdead={} depth_adopt={} "
+        "depth_hit={} | "
+        "TEXTIME hash_us={} copy_us={} detile_us={} create_us={} overlap_us={}",
+        img_new.exchange(0), img_free.exchange(0), overlap_fail.exchange(0),
+        refresh_total.exchange(0), refresh_upload.exchange(0), refresh_empty.exchange(0),
+        refresh_skip_gpu.exchange(0), expand.exchange(0), expand_bytes.exchange(0) >> 20,
+        free_chance.exchange(0), depth_overlap.exchange(0), gc_runs.exchange(0),
+        gc_free.exchange(0), mem_used.load() >> 20, mem_trigger.load() >> 20,
+        f_blockdim.exchange(0), f_tile.exchange(0), f_left_target.exchange(0),
+        f_copymip.exchange(0), upload_bytes.exchange(0) >> 20,
+        [] {
+            std::scoped_lock lk{seen_mutex};
+            u64 n = 0;
+            for (const auto& [addr, count] : seen_uploads) {
+                if (count > 1) {
+                    n += count - 1;
+                }
+            }
+            seen_uploads.clear();
+            return n;
+        }(),
+        ring_hits.load(std::memory_order_relaxed), ring_hits_left.load(std::memory_order_relaxed),
+        ring_mipfail.load(std::memory_order_relaxed), ring_migrate.load(std::memory_order_relaxed),
+        ring_migrate_left.load(std::memory_order_relaxed),
+        depth_recreate.load(std::memory_order_relaxed), stencil_new.load(std::memory_order_relaxed),
+        pool_hits.load(), pool_adopt.load(), pool_adopt_reject.load(), pool_evict.load(),
+        pool_demote.load(), pool_cpuskip.load(), pool_carveout.load(), pool_wb_dead.load(),
+        pool_depth_adopt.load(), pool_depth_hit.load(), hash_us.exchange(0), copy_us.exchange(0),
+        detile_us.exchange(0), create_us.exchange(0), overlap_us.exchange(0));
 }
 
 // [postmortem] Partial-window TEXSTAT for the crash handler: loads only, no
 // exchange (the periodic Report keeps its own windows), no locks, no allocations.
 void DumpPostmortem() {
-    LOG_CRITICAL(Render_Vulkan,
-                 "POSTMORTEM-TEX: new={} free={} chance_free={} upload_MB={} ring_hits={} "
-                 "ring_hits_left={} ring_mipfail={} ring_migrate={} ring_migrate_left={} | "
-                 "depth_recreate={} stencil_new={} | parser_op={:#x} op_seq={} | "
-                 "pool hit={} adopt={}/{} evict={} demote={} cpuskip={} carve={} wbdead={} depth_adopt={} depth_hit={} | "
-                 "TEXTIME hash_us={} copy_us={} detile_us={} create_us={} overlap_us={}",
-                 img_new.load(std::memory_order_relaxed), img_free.load(std::memory_order_relaxed),
-                 free_chance.load(std::memory_order_relaxed),
-                 upload_bytes.load(std::memory_order_relaxed) >> 20,
-                 ring_hits.load(std::memory_order_relaxed),
-                 ring_hits_left.load(std::memory_order_relaxed),
-                 ring_mipfail.load(std::memory_order_relaxed),
-                 ring_migrate.load(std::memory_order_relaxed),
-                 ring_migrate_left.load(std::memory_order_relaxed),
-                 depth_recreate.load(std::memory_order_relaxed),
-                 stencil_new.load(std::memory_order_relaxed),
-                 Postmortem::g_gfx_cur_op.load(std::memory_order_relaxed),
-                 Postmortem::g_gfx_op_seq.load(std::memory_order_relaxed), pool_hits.load(),
-                 pool_adopt.load(), pool_adopt_reject.load(), pool_evict.load(),
-                 pool_demote.load(), pool_cpuskip.load(), pool_carveout.load(),
-                 pool_wb_dead.load(), pool_depth_adopt.load(), pool_depth_hit.load(),
-                 hash_us.load(std::memory_order_relaxed), copy_us.load(std::memory_order_relaxed),
-                 detile_us.load(std::memory_order_relaxed),
-                 create_us.load(std::memory_order_relaxed),
-                 overlap_us.load(std::memory_order_relaxed));
+    LOG_CRITICAL(
+        Render_Vulkan,
+        "POSTMORTEM-TEX: new={} free={} chance_free={} upload_MB={} ring_hits={} "
+        "ring_hits_left={} ring_mipfail={} ring_migrate={} ring_migrate_left={} | "
+        "depth_recreate={} stencil_new={} | parser_op={:#x} op_seq={} | "
+        "pool hit={} adopt={}/{} evict={} demote={} cpuskip={} carve={} wbdead={} depth_adopt={} "
+        "depth_hit={} | "
+        "TEXTIME hash_us={} copy_us={} detile_us={} create_us={} overlap_us={}",
+        img_new.load(std::memory_order_relaxed), img_free.load(std::memory_order_relaxed),
+        free_chance.load(std::memory_order_relaxed),
+        upload_bytes.load(std::memory_order_relaxed) >> 20,
+        ring_hits.load(std::memory_order_relaxed), ring_hits_left.load(std::memory_order_relaxed),
+        ring_mipfail.load(std::memory_order_relaxed), ring_migrate.load(std::memory_order_relaxed),
+        ring_migrate_left.load(std::memory_order_relaxed),
+        depth_recreate.load(std::memory_order_relaxed), stencil_new.load(std::memory_order_relaxed),
+        Postmortem::g_gfx_cur_op.load(std::memory_order_relaxed),
+        Postmortem::g_gfx_op_seq.load(std::memory_order_relaxed), pool_hits.load(),
+        pool_adopt.load(), pool_adopt_reject.load(), pool_evict.load(), pool_demote.load(),
+        pool_cpuskip.load(), pool_carveout.load(), pool_wb_dead.load(), pool_depth_adopt.load(),
+        pool_depth_hit.load(), hash_us.load(std::memory_order_relaxed),
+        copy_us.load(std::memory_order_relaxed), detile_us.load(std::memory_order_relaxed),
+        create_us.load(std::memory_order_relaxed), overlap_us.load(std::memory_order_relaxed));
 }
 } // namespace texstat
 
@@ -465,10 +459,11 @@ struct DlimgTime {
         }
         last_report = now;
         const u64 c = calls.exchange(0);
-        LOG_CRITICAL(Render_Vulkan,
-                     "DLIMG-TIME: calls={} images={} lock={}us finish={}us wb={}us total={}us (per 5 s)",
-                     c, images.exchange(0), lock_ns.exchange(0) / 1000, finish_ns.exchange(0) / 1000,
-                     wb_ns.exchange(0) / 1000, total_ns.exchange(0) / 1000);
+        LOG_CRITICAL(
+            Render_Vulkan,
+            "DLIMG-TIME: calls={} images={} lock={}us finish={}us wb={}us total={}us (per 5 s)", c,
+            images.exchange(0), lock_ns.exchange(0) / 1000, finish_ns.exchange(0) / 1000,
+            wb_ns.exchange(0) / 1000, total_ns.exchange(0) / 1000);
     }
 } g_dlimg_time;
 } // namespace
@@ -490,11 +485,10 @@ void TextureCache::ProcessDownloadImages() {
     struct DlTotal {
         std::chrono::steady_clock::time_point t0;
         ~DlTotal() {
-            g_dlimg_time.total_ns.fetch_add(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - t0)
-                    .count(),
-                std::memory_order_relaxed);
+            g_dlimg_time.total_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                std::chrono::steady_clock::now() - t0)
+                                                .count(),
+                                            std::memory_order_relaxed);
             g_dlimg_time.calls.fetch_add(1, std::memory_order_relaxed);
             g_dlimg_time.MaybeReport();
         }
@@ -613,16 +607,16 @@ void TextureCache::ProcessDownloadImages() {
                 continue;
             }
             if (!dlimg_pool[i].buf) {
-                dlimg_pool[i].buf = std::make_unique<Buffer>(instance, scheduler,
-                                                             MemoryUsage::Download, 0, AllFlags,
-                                                             kAsyncSlotBytes);
+                dlimg_pool[i].buf = std::make_unique<Buffer>(
+                    instance, scheduler, MemoryUsage::Download, 0, AllFlags, kAsyncSlotBytes);
             }
             dlimg_busy_mask.fetch_or(1u << i, std::memory_order_acq_rel);
             return static_cast<int>(i);
         }
         ++async_fallbacks;
         if (async_fallbacks <= 8 || async_fallbacks % 1024 == 0) {
-            LOG_CRITICAL(Render_Vulkan, "DLIMG-ASYNC: pool exhausted ({} times) - synchronous batch",
+            LOG_CRITICAL(Render_Vulkan,
+                         "DLIMG-ASYNC: pool exhausted ({} times) - synchronous batch",
                          async_fallbacks);
         }
         return -1;
@@ -643,8 +637,8 @@ void TextureCache::ProcessDownloadImages() {
             LOG_CRITICAL(Render_Vulkan,
                          "DLIMG-ASYNC: batch #{} slot {} images={} bytes={} deferred to tick {} "
                          "(fallbacks {})",
-                         async_batches, async_slot, wbs.size(), async_used,
-                         scheduler.CurrentTick(), async_fallbacks);
+                         async_batches, async_slot, wbs.size(), async_used, scheduler.CurrentTick(),
+                         async_fallbacks);
         }
         std::vector<PendingWb> deferred(wbs.begin(), wbs.end());
         const int slot = async_slot;
@@ -768,18 +762,16 @@ void TextureCache::ProcessDownloadImages() {
                     .layerCount = image.info.resources.layers,
                 },
             .imageOffset = {0, 0, 0},
-            .imageExtent = {image.info.size.width, image.info.size.height,
-                            image.info.size.depth},
+            .imageExtent = {image.info.size.width, image.info.size.height, image.info.size.depth},
         };
         // Re-fetch per image: Finish() inside flush_chunk swaps the worker cmdbuf.
         scheduler.EndRendering();
         const auto cmdbuf = scheduler.CommandBuffer();
-        image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
-                      {});
+        image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {});
         cmdbuf.copyImageToBuffer(image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                                  staging_handle, image_download);
-        wbs.push_back({image.info.guest_address, download, download_size, image_id,
-                       scheduler.CurrentTick()});
+        wbs.push_back(
+            {image.info.guest_address, download, download_size, image_id, scheduler.CurrentTick()});
         chunk_bytes += download_size;
     }
     if (async_slot >= 0) {
@@ -926,9 +918,9 @@ u64 HashGuestRange(const u8* addr, u64 size, const char* site) {
     Parserprof::PhaseProbe phase{Parserprof::PhHash};
     const auto t0 = std::chrono::steady_clock::now();
     const u64 hash = XXH3_64bits(addr, size);
-    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - t0)
-                        .count();
+    const auto us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
     if (us > 5000) {
         if (g_texhash_slow_lines.fetch_add(1, std::memory_order_relaxed) < 32) {
             LOG_CRITICAL(Render_Vulkan,
@@ -1360,11 +1352,11 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         // [postmortem] Uncapped ring-signature counter: the 960x540 video ring sliding
         // through this branch is the last log line before death in deck2/stable1/stableC,
         // but the capped MIPFAIL/MIPOF logs go quiet long before the fatal window.
-        const bool pm_ring_sig =
-            image_info.size.width == 960 && image_info.size.height == 540 &&
-            image_info.guest_size == 0x240000 && image_info.resources.levels == 1 &&
-            cache_image.info.size == image_info.size &&
-            cache_image.info.guest_size == image_info.guest_size;
+        const bool pm_ring_sig = image_info.size.width == 960 && image_info.size.height == 540 &&
+                                 image_info.guest_size == 0x240000 &&
+                                 image_info.resources.levels == 1 &&
+                                 cache_image.info.size == image_info.size &&
+                                 cache_image.info.guest_size == image_info.guest_size;
         if (pm_ring_sig) {
             texstat::ring_hits.fetch_add(1, std::memory_order_relaxed);
         }
@@ -1405,20 +1397,20 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                 return e && e[0] == '1';
             }();
             const u64 pm_dd = image_info.guest_address - cache_image.info.guest_address;
-            if (ring_mig_dl && !RingPoolEnabled() && pm_ring_sig &&
-                pm_dd < image_info.guest_size &&
+            if (ring_mig_dl && !RingPoolEnabled() && pm_ring_sig && pm_dd < image_info.guest_size &&
                 image_info.resources.layers == 1 && cache_image.info.resources.levels == 1 &&
                 cache_image.info.resources.layers == 1 &&
                 cache_image.info.tile_mode == image_info.tile_mode &&
                 cache_image.info.pixel_format == image_info.pixel_format &&
-                cache_image.info.pitch == image_info.pitch &&
-                !cache_image.binding.is_target && !cache_image.binding.is_bound &&
+                cache_image.info.pitch == image_info.pitch && !cache_image.binding.is_target &&
+                !cache_image.binding.is_bound &&
                 cache_image.tick_accessed_last < scheduler.CurrentTick()) {
                 bool ok = False(cache_image.flags & ImageFlagBits::GpuModified);
                 if (!ok && cache_image.downloaded_tick >= cache_image.modified_tick) {
                     ok = true; // fast path: CPU backing already current
                 } else if (!ok && scheduler.CurrentTick() -
-                                          scheduler.GetMasterSemaphore()->KnownGpuTick() <= 2) {
+                                          scheduler.GetMasterSemaphore()->KnownGpuTick() <=
+                                      2) {
                     DownloadImageMemory(cache_image_id, true); // inline sync (~0.4ms), gated fresh
                     ok = true;
                 }
@@ -1434,13 +1426,12 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                     RegisterImage(cache_image_id);
                     TrackImage(cache_image_id);
                     cache_image.flags |= ImageFlagBits::CpuDirty;
-                    const u64 n =
-                        texstat::ring_migrate.fetch_add(1, std::memory_order_relaxed) + 1;
+                    const u64 n = texstat::ring_migrate.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (n <= 8 || n % 256 == 0) {
-                        LOG_CRITICAL(Render_Vulkan,
-                                     "RINGMIGDL #{}: migrated ring image {:#x} -> {:#x} (delta {:#x})",
-                                     n, image_info.guest_address - pm_dd, image_info.guest_address,
-                                     pm_dd);
+                        LOG_CRITICAL(
+                            Render_Vulkan,
+                            "RINGMIGDL #{}: migrated ring image {:#x} -> {:#x} (delta {:#x})", n,
+                            image_info.guest_address - pm_dd, image_info.guest_address, pm_dd);
                     }
                     return {cache_image_id, -1, -1};
                 }
@@ -1466,8 +1457,8 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                 cache_image.info.resources.layers == 1 &&
                 cache_image.info.tile_mode == image_info.tile_mode &&
                 cache_image.info.pixel_format == image_info.pixel_format &&
-                cache_image.info.pitch == image_info.pitch &&
-                !cache_image.binding.is_target && !cache_image.binding.is_bound &&
+                cache_image.info.pitch == image_info.pitch && !cache_image.binding.is_target &&
+                !cache_image.binding.is_bound &&
                 False(cache_image.flags & ImageFlagBits::GpuModified) &&
                 cache_image.tick_accessed_last < scheduler.CurrentTick()) {
                 UntrackImage(cache_image_id);
@@ -1479,9 +1470,8 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                 const u64 n = texstat::ring_migrate.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (n <= 8 || n % 256 == 0) {
                     LOG_CRITICAL(Render_Vulkan,
-                                 "RINGMIG #{}: migrated ring image {:#x} -> {:#x} (delta {:#x})",
-                                 n, image_info.guest_address - pm_d, image_info.guest_address,
-                                 pm_d);
+                                 "RINGMIG #{}: migrated ring image {:#x} -> {:#x} (delta {:#x})", n,
+                                 image_info.guest_address - pm_d, image_info.guest_address, pm_d);
                 }
                 return {cache_image_id, -1, -1};
             }
@@ -1494,8 +1484,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             const u64 pm_d = image_info.guest_address - cache_image.info.guest_address;
             const u32 mask =
                 (u32(!(pm_d > 0 && pm_d < image_info.guest_size)) << 0) |
-                (u32(!(image_info.resources.layers == 1 &&
-                       cache_image.info.resources.layers == 1))
+                (u32(!(image_info.resources.layers == 1 && cache_image.info.resources.layers == 1))
                  << 1) |
                 (u32(cache_image.info.resources.levels != 1) << 2) |
                 (u32(cache_image.info.tile_mode != image_info.tile_mode) << 3) |
@@ -1509,18 +1498,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             static u32 ringrej_reported = 0;
             if (ringrej_reported < 8) {
                 ++ringrej_reported;
-                LOG_CRITICAL(Render_Vulkan,
-                             "RINGREJ-right #{}: mask={:#x} (b0delta b1layers b2levels b3tile "
-                             "b4fmt b5pitch b6target b7bound b8gpumod b9tick b10rebind) delta={:#x}",
-                             ringrej_reported, mask, pm_d);
+                LOG_CRITICAL(
+                    Render_Vulkan,
+                    "RINGREJ-right #{}: mask={:#x} (b0delta b1layers b2levels b3tile "
+                    "b4fmt b5pitch b6target b7bound b8gpumod b9tick b10rebind) delta={:#x}",
+                    ringrej_reported, mask, pm_d);
             }
         }
 
         // Image isn't a subresource but a chance overlap.
         // [R9] Never chance-free a pool member (a member on a foreign address already returned at
         // the top of ResolveOverlap; this is belt-and-suspenders against future branch reorders).
-        if (safe_to_delete && !(RingPoolEnabled() &&
-                                True(cache_image.flags & ImageFlagBits::RingPooled))) {
+        if (safe_to_delete &&
+            !(RingPoolEnabled() && True(cache_image.flags & ImageFlagBits::RingPooled))) {
             texstat::free_chance.fetch_add(1, std::memory_order_relaxed);
             FreeImage(cache_image_id);
         }
@@ -1544,8 +1534,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             const u64 pm_dl = cache_image.info.guest_address - image_info.guest_address;
             const u32 mask =
                 (u32(!(pm_dl < image_info.guest_size)) << 0) |
-                (u32(!(image_info.resources.layers == 1 &&
-                       cache_image.info.resources.layers == 1))
+                (u32(!(image_info.resources.layers == 1 && cache_image.info.resources.layers == 1))
                  << 1) |
                 (u32(cache_image.info.resources.levels != 1) << 2) |
                 (u32(cache_image.info.tile_mode != image_info.tile_mode) << 3) |
@@ -1559,10 +1548,11 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             static u32 ringrej_left_reported = 0;
             if (ringrej_left_reported < 8) {
                 ++ringrej_left_reported;
-                LOG_CRITICAL(Render_Vulkan,
-                             "RINGREJ-left #{}: mask={:#x} (b0delta b1layers b2levels b3tile "
-                             "b4fmt b5pitch b6target b7bound b8gpumod b9tick b10rebind) delta={:#x}",
-                             ringrej_left_reported, mask, pm_dl);
+                LOG_CRITICAL(
+                    Render_Vulkan,
+                    "RINGREJ-left #{}: mask={:#x} (b0delta b1layers b2levels b3tile "
+                    "b4fmt b5pitch b6target b7bound b8gpumod b9tick b10rebind) delta={:#x}",
+                    ringrej_left_reported, mask, pm_dl);
             }
         }
         // [D1 SHADPS4_RINGMIG_DL=1] Tick-versioned migration (left branch), mirror of the right
@@ -1577,19 +1567,18 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             const u64 pm_dl3 = cache_image.info.guest_address - image_info.guest_address;
             if (ring_mig_dl && !RingPoolEnabled() && pm_ring_sig_left && mip_left < 0 &&
                 pm_dl3 < image_info.guest_size && image_info.resources.layers == 1 &&
-                cache_image.info.resources.levels == 1 &&
-                cache_image.info.resources.layers == 1 &&
+                cache_image.info.resources.levels == 1 && cache_image.info.resources.layers == 1 &&
                 cache_image.info.tile_mode == image_info.tile_mode &&
                 cache_image.info.pixel_format == image_info.pixel_format &&
-                cache_image.info.pitch == image_info.pitch &&
-                !cache_image.binding.is_target && !cache_image.binding.is_bound &&
-                !cache_image.binding.needs_rebind &&
+                cache_image.info.pitch == image_info.pitch && !cache_image.binding.is_target &&
+                !cache_image.binding.is_bound && !cache_image.binding.needs_rebind &&
                 cache_image.tick_accessed_last < scheduler.CurrentTick()) {
                 bool ok = False(cache_image.flags & ImageFlagBits::GpuModified);
                 if (!ok && cache_image.downloaded_tick >= cache_image.modified_tick) {
                     ok = true;
                 } else if (!ok && scheduler.CurrentTick() -
-                                          scheduler.GetMasterSemaphore()->KnownGpuTick() <= 2) {
+                                          scheduler.GetMasterSemaphore()->KnownGpuTick() <=
+                                      2) {
                     DownloadImageMemory(cache_image_id, true);
                     ok = true;
                 }
@@ -1630,13 +1619,11 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             const u64 pm_dl2 = cache_image.info.guest_address - image_info.guest_address;
             if (ring_mig_left && pm_ring_sig_left && mip_left < 0 &&
                 pm_dl2 < image_info.guest_size && image_info.resources.layers == 1 &&
-                cache_image.info.resources.levels == 1 &&
-                cache_image.info.resources.layers == 1 &&
+                cache_image.info.resources.levels == 1 && cache_image.info.resources.layers == 1 &&
                 cache_image.info.tile_mode == image_info.tile_mode &&
                 cache_image.info.pixel_format == image_info.pixel_format &&
-                cache_image.info.pitch == image_info.pitch &&
-                !cache_image.binding.is_target && !cache_image.binding.is_bound &&
-                !cache_image.binding.needs_rebind &&
+                cache_image.info.pitch == image_info.pitch && !cache_image.binding.is_target &&
+                !cache_image.binding.is_bound && !cache_image.binding.needs_rebind &&
                 False(cache_image.flags & ImageFlagBits::GpuModified) &&
                 cache_image.tick_accessed_last < scheduler.CurrentTick()) {
                 UntrackImage(cache_image_id);
@@ -1821,14 +1808,13 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             bool overlaps_member = false;
             VAddr member_addr = 0;
             if (noovl) {
-                ForEachImageInRegion(info.guest_address, info.guest_size,
-                                     [&](ImageId other_id, Image& other) {
-                                         if (other_id != image_id &&
-                                             True(other.flags & ImageFlagBits::RingPooled)) {
-                                             overlaps_member = true;
-                                             member_addr = other.info.guest_address;
-                                         }
-                                     });
+                ForEachImageInRegion(
+                    info.guest_address, info.guest_size, [&](ImageId other_id, Image& other) {
+                        if (other_id != image_id && True(other.flags & ImageFlagBits::RingPooled)) {
+                            overlaps_member = true;
+                            member_addr = other.info.guest_address;
+                        }
+                    });
             }
             if (overlaps_member) {
                 static std::atomic<u32> s_skip{0};
@@ -1968,11 +1954,10 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc) {
     const auto& res = image.info.resources;
     if (view_info.range.base.level + view_info.range.extent.levels > res.levels ||
         view_info.range.base.layer + view_info.range.extent.layers > res.layers) {
-        LOG_CRITICAL(Render_Vulkan,
-                     "VIEWOOB: addr={:#x} view lvl {}+{} of {}, lyr {}+{} of {}",
-                    image.info.guest_address, view_info.range.base.level,
-                    view_info.range.extent.levels, res.levels, view_info.range.base.layer,
-                    view_info.range.extent.layers, res.layers);
+        LOG_CRITICAL(Render_Vulkan, "VIEWOOB: addr={:#x} view lvl {}+{} of {}, lyr {}+{} of {}",
+                     image.info.guest_address, view_info.range.base.level,
+                     view_info.range.extent.levels, res.levels, view_info.range.base.layer,
+                     view_info.range.extent.layers, res.layers);
         if (view_info.range.base.level >= res.levels) {
             view_info.range.base.level = res.levels - 1;
         }
@@ -2039,28 +2024,26 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
             const char* e = std::getenv("SHADPS4_STENCILFIX");
             return e && e[0] == '1';
         }();
-        ForEachImageInRegion(desc.info.stencil_addr, desc.info.stencil_size,
-                             [&](ImageId image_id, Image& image) {
-                                 if (image.info.guest_address != desc.info.stencil_addr) {
-                                     return;
-                                 }
-                                 if (stencil_fix &&
-                                     image.info.pixel_format != vk::Format::eUndefined) {
-                                     static std::atomic<u32> s_n{0};
-                                     const u32 k = s_n.fetch_add(1, std::memory_order_relaxed) + 1;
-                                     if (k <= 8 || k % 65536 == 0) {
-                                         LOG_CRITICAL(Render_Vulkan,
-                                                      "STENCILFIX #{}: color image id={} {}x{} "
-                                                      "fmt={} at stencil addr {:#x} not linked",
-                                                      k, image_id.index, image.info.size.width,
-                                                      image.info.size.height,
-                                                      static_cast<u32>(image.info.pixel_format),
-                                                      desc.info.stencil_addr);
-                                     }
-                                     return;
-                                 }
-                                 stencil_id = image_id;
-                             });
+        ForEachImageInRegion(
+            desc.info.stencil_addr, desc.info.stencil_size, [&](ImageId image_id, Image& image) {
+                if (image.info.guest_address != desc.info.stencil_addr) {
+                    return;
+                }
+                if (stencil_fix && image.info.pixel_format != vk::Format::eUndefined) {
+                    static std::atomic<u32> s_n{0};
+                    const u32 k = s_n.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (k <= 8 || k % 65536 == 0) {
+                        LOG_CRITICAL(
+                            Render_Vulkan,
+                            "STENCILFIX #{}: color image id={} {}x{} "
+                            "fmt={} at stencil addr {:#x} not linked",
+                            k, image_id.index, image.info.size.width, image.info.size.height,
+                            static_cast<u32>(image.info.pixel_format), desc.info.stencil_addr);
+                    }
+                    return;
+                }
+                stencil_id = image_id;
+            });
         if (!stencil_id) {
             // [R6 D5] stencil insert: the other uncounted image creation on the ring address.
             texstat::stencil_new.fetch_add(1, std::memory_order_relaxed);
@@ -2070,8 +2053,8 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
                 if (k <= 8 || k % 256 == 0) {
                     LOG_CRITICAL(Render_Vulkan,
                                  "STENCILNEW #{}: stencil_addr={:#x} size={:#x} {}x{}", k,
-                                 desc.info.stencil_addr, desc.info.stencil_size, desc.info.size.width,
-                                 desc.info.size.height);
+                                 desc.info.stencil_addr, desc.info.stencil_size,
+                                 desc.info.size.width, desc.info.size.height);
                 }
             }
             ImageInfo info{};
@@ -2541,9 +2524,8 @@ void TextureCache::DeleteImage(ImageId image_id) {
     // tick 27663) as the blur's read target. Keep the last 256 deletions with the Vulkan handle
     // so the fault dump can name the guest image and the ticks (delete vs last use vs fault).
     FreeImgRing::Note(reinterpret_cast<u64>(static_cast<VkImage>(image.GetImage())),
-                      image.info.guest_address,
-                      image.info.guest_size, image.info.size.width, image.info.size.height,
-                      image.info.resources.levels, scheduler.CurrentTick(),
+                      image.info.guest_address, image.info.guest_size, image.info.size.width,
+                      image.info.size.height, image.info.resources.levels, scheduler.CurrentTick(),
                       image.tick_accessed_last);
 
     // Remove any registered meta areas.
@@ -2563,8 +2545,7 @@ void TextureCache::DeleteImage(ImageId image_id) {
     // DeleteImage is reached only from FreeImage under `mutex`, so ring_pool mutation is safe.
     if (True(image.flags & ImageFlagBits::RingPooled)) {
         image.flags &= ~ImageFlagBits::RingPooled;
-        ring_pool.erase(std::remove(ring_pool.begin(), ring_pool.end(), image_id),
-                        ring_pool.end());
+        ring_pool.erase(std::remove(ring_pool.begin(), ring_pool.end(), image_id), ring_pool.end());
         texstat::pool_carveout.fetch_add(1, std::memory_order_relaxed);
     }
 

@@ -60,7 +60,7 @@ This project began for fun. Given our limited free time, it may take some time b
 
 ## Docker
 
-For building shadPS4 in a containerized environment using Docker and VSCode, check the instructions here:  
+For building shadPS4 in a containerized environment using Docker and VSCode, check the instructions here:
 [**Docker Build Instructions**](https://github.com/shadps4-emu/shadPS4/blob/main/documents/building-docker.md)
 
 ## Windows

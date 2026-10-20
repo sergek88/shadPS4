@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
-#include "common/postmortem.h"
 #include "common/debug.h"
+#include "common/postmortem.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -259,8 +259,7 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
         const auto checkpoints = submit_queue.getCheckpointDataNV();
         for (const auto& cp : checkpoints) {
             LOG_CRITICAL(Render_Vulkan, "CHECKPOINT: stage={} marker={:#x}",
-                         vk::to_string(cp.stage),
-                         reinterpret_cast<u64>(cp.pCheckpointMarker));
+                         vk::to_string(cp.stage), reinterpret_cast<u64>(cp.pCheckpointMarker));
         }
         DumpDeviceFaultImpl(instance);
     }

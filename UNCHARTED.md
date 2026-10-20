@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
+SPDX-License-Identifier: GPL-2.0-or-later
+-->
+
 # Uncharted: The Nathan Drake Collection (CUSA02320)
 
 Guys, for a couple of months we worked with Claude and got good results, but Drake's model is not finished yet on my side. The game works now, and works well. Thanks everyone.

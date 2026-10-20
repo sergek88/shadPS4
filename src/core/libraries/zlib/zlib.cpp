@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <condition_variable>
-#include "common/postmortem.h"
 #include <mutex>
 #include <stop_token>
 #include <unordered_map>
 #include <miniz.h>
 #include <queue>
+#include "common/postmortem.h"
 
 #include "common/logging/log.h"
 #include "common/thread.h"

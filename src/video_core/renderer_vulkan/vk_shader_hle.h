@@ -102,25 +102,25 @@ public:
     static const char* DeclineName(Decline d);
 
     // env (parsed once; the hash list uses the SKIPCS grammar)
-    static bool Wanted(u64 h);         // SHADPS4_CSBATCH=<hex>[,<hex>]
+    static bool Wanted(u64 h);          // SHADPS4_CSBATCH=<hex>[,<hex>]
     static const std::string& Hashes(); // the list as given, for the armed line
     static u32 Wg();                    // SHADPS4_CSBATCH_WG (64)
     static u32 MaxJobs();               // SHADPS4_CSBATCH_MAX (1024)
     static u32 MaxGroups();
     /// [CSBATCH-DEFERLABEL] SHADPS4_CSBATCH_MAXLABELS (default 64): how many guest completion
     /// labels may wait behind one batch before it is recorded anyway.
-    static u32 MaxHeldLabels();             // SHADPS4_CSBATCH_MAXGROUPS (65536); see max_groups
-    static u32 FlushEvery();            // SHADPS4_CSBATCH_EVERY (0)
-    static bool Robust();               // SHADPS4_CSBATCH_ROBUST (1)
-    static bool PalVec4();              // SHADPS4_CSBATCH_PAL_VEC4 (1)
-    static bool PreBar();               // SHADPS4_CSBATCH_PREBAR (1)
-    static bool PostBar();              // SHADPS4_CSBATCH_POSTBAR (0)
-    static bool ImgInv();               // SHADPS4_CSBATCH_IMGINV (1)
-    static bool ZoneSync();             // SHADPS4_CSBATCH_ZONESYNC (1)
-    static bool CountsForChunk();       // SHADPS4_CSBATCH_CHUNK (1): batch = 1 dispatch for CHUNK_DRAWS
-    static u32 Shadow();                // SHADPS4_CSBATCH_SHADOW=N frames (0)
-    static bool Log();                  // SHADPS4_CSBATCH_LOG (0)
-    static bool TableVram();            // SHADPS4_CSBATCH_TABLE_VRAM (0)
+    static u32 MaxHeldLabels();   // SHADPS4_CSBATCH_MAXGROUPS (65536); see max_groups
+    static u32 FlushEvery();      // SHADPS4_CSBATCH_EVERY (0)
+    static bool Robust();         // SHADPS4_CSBATCH_ROBUST (1)
+    static bool PalVec4();        // SHADPS4_CSBATCH_PAL_VEC4 (1)
+    static bool PreBar();         // SHADPS4_CSBATCH_PREBAR (1)
+    static bool PostBar();        // SHADPS4_CSBATCH_POSTBAR (0)
+    static bool ImgInv();         // SHADPS4_CSBATCH_IMGINV (1)
+    static bool ZoneSync();       // SHADPS4_CSBATCH_ZONESYNC (1)
+    static bool CountsForChunk(); // SHADPS4_CSBATCH_CHUNK (1): batch = 1 dispatch for CHUNK_DRAWS
+    static u32 Shadow();          // SHADPS4_CSBATCH_SHADOW=N frames (0)
+    static bool Log();            // SHADPS4_CSBATCH_LOG (0)
+    static bool TableVram();      // SHADPS4_CSBATCH_TABLE_VRAM (0)
 
     /// Compiles the kernel, creates the pipeline and the private table ring. Logs
     /// "[CSBATCH] armed ..." or "[CSBATCH] compile FAILED ... - feature off".
@@ -145,7 +145,7 @@ public:
     std::thread::id gpu_thread{};
     u32 max_groups = 0; // MaxGroups() clamped to maxComputeWorkGroupCount[0] (Create)
     std::unique_ptr<VideoCore::StreamBuffer> ring; // 8 MiB, MemoryUsage::Stream, never waits
-    std::unique_ptr<VideoCore::Buffer> vram_table;  // SHADPS4_CSBATCH_TABLE_VRAM=1: staging copy
+    std::unique_ptr<VideoCore::Buffer> vram_table; // SHADPS4_CSBATCH_TABLE_VRAM=1: staging copy
     vk::UniqueDescriptorSetLayout desc_layout;
     vk::UniquePipelineLayout layout;
     vk::UniquePipeline pipeline;

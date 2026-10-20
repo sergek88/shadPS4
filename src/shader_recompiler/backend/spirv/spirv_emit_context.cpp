@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "common/assert.h"
-#include "common/div_ceil.h"
 #include <array>
 #include <cstdlib>
+#include "common/assert.h"
+#include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/runtime_info.h"
@@ -353,8 +353,9 @@ void EmitContext::SetupCsSplit() {
     cssplit_log2 = req;
     cssplit_local = s / k;
     info.cssplit_eff_log2 = static_cast<u8>(req);
-    LOG_CRITICAL(Render_Recompiler, "[CSSPLIT] shader {:#x}: S={} K={} -> LocalSize {}x1x1, grid x{}",
-                 info.pgm_hash, s, k, cssplit_local, k);
+    LOG_CRITICAL(Render_Recompiler,
+                 "[CSSPLIT] shader {:#x}: S={} K={} -> LocalSize {}x1x1, grid x{}", info.pgm_hash,
+                 s, k, cssplit_local, k);
 }
 
 void EmitContext::DefineInputs() {
@@ -1276,9 +1277,9 @@ void EmitContext::EmitDropLog(Id addr, Id value) {
     }
     // Stray job-system pointers (0x0, 0x10000, 0x8000000000...) made 28k dropped writes per 5 s
     // and drowned the real ones; only the guest user range is worth carrying.
-    const auto in_guest{OpLogicalAnd(
-        U1[1], OpUGreaterThanEqual(U1[1], addr, Constant(U64, u64{0x1000000000ULL})),
-        OpULessThan(U1[1], addr, Constant(U64, u64{0x1200000000ULL})))};
+    const auto in_guest{
+        OpLogicalAnd(U1[1], OpUGreaterThanEqual(U1[1], addr, Constant(U64, u64{0x1000000000ULL})),
+                     OpULessThan(U1[1], addr, Constant(U64, u64{0x1200000000ULL})))};
     const auto guest_label{OpLabel()};
     const auto guest_merge_label{OpLabel()};
     OpSelectionMerge(guest_merge_label, spv::SelectionControlMask::MaskNone);
@@ -1286,8 +1287,9 @@ void EmitContext::EmitDropLog(Id addr, Id value) {
     AddLabel(guest_label);
     const auto& log_buffer{buffers[fault_buffer_index]};
     const auto [log_id, log_ptr_type] = log_buffer.Alias(PointerType::U32);
-    const auto dlog_base{ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES / 32 +
-                                                   VideoCore::BufferCache::BDA_WRITE_LOG_BYTES / 4))};
+    const auto dlog_base{
+        ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES / 32 +
+                                  VideoCore::BufferCache::BDA_WRITE_LOG_BYTES / 4))};
     const auto count_ptr{OpAccessChain(log_ptr_type, log_id, u32_zero_value, dlog_base)};
     const auto slot{OpAtomicIAdd(U32[1], count_ptr, ConstU32(1U), ConstU32(0U), u32_one_value)};
     const auto capacity{ConstU32(VideoCore::BufferCache::BDA_DROP_LOG_ENTRIES)};
@@ -1297,15 +1299,17 @@ void EmitContext::EmitDropLog(Id addr, Id value) {
     OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
     OpBranchConditional(has_room, store_label, merge_label);
     AddLabel(store_label);
-    const auto entry_base{
-        OpIAdd(U32[1], OpIAdd(U32[1], dlog_base, u32_one_value),
-               OpIMul(U32[1], slot, ConstU32(VideoCore::BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY)))};
+    const auto entry_base{OpIAdd(
+        U32[1], OpIAdd(U32[1], dlog_base, u32_one_value),
+        OpIMul(U32[1], slot, ConstU32(VideoCore::BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY)))};
     const auto addr_lo{OpUConvert(U32[1], OpBitwiseAnd(U64, addr, Constant(U64, u64{0xFFFFFFFF})))};
     const auto addr_hi{OpUConvert(U32[1], OpShiftRightLogical(U64, addr, Constant(U64, u64{32})))};
     OpStore(OpAccessChain(log_ptr_type, log_id, u32_zero_value, entry_base), addr_lo);
-    OpStore(OpAccessChain(log_ptr_type, log_id, u32_zero_value, OpIAdd(U32[1], entry_base, ConstU32(1U))),
+    OpStore(OpAccessChain(log_ptr_type, log_id, u32_zero_value,
+                          OpIAdd(U32[1], entry_base, ConstU32(1U))),
             addr_hi);
-    OpStore(OpAccessChain(log_ptr_type, log_id, u32_zero_value, OpIAdd(U32[1], entry_base, ConstU32(2U))),
+    OpStore(OpAccessChain(log_ptr_type, log_id, u32_zero_value,
+                          OpIAdd(U32[1], entry_base, ConstU32(2U))),
             value);
     OpBranch(merge_label);
     AddLabel(merge_label);
@@ -1368,14 +1372,17 @@ Id EmitContext::DefineWriteConst() {
         const auto [dual_buffer_id, dual_pointer_type] = dual_buffer.Alias(PointerType::U64);
         const auto page{OpShiftRightLogical(
             U64, addr, Constant(U64, u64{VideoCore::BufferCache::CACHING_PAGEBITS}))};
-        const auto rel{OpISub(U64, page, Constant(U64, VideoCore::BufferCache::DUAL_WINDOW_BASE_PAGE))};
+        const auto rel{
+            OpISub(U64, page, Constant(U64, VideoCore::BufferCache::DUAL_WINDOW_BASE_PAGE))};
         const auto idx{OpUMin(U64, rel, Constant(U64, VideoCore::BufferCache::DUAL_WINDOW_PAGES))};
         const auto idx32{OpUConvert(U32[1], idx)};
-        const auto tidx{OpIAdd(U32[1], idx32,
-                               ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES)))};
+        const auto tidx{OpIAdd(
+            U32[1], idx32, ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES)))};
         const auto eptr{OpAccessChain(dual_pointer_type, dual_buffer_id, u32_zero_value, tidx)};
-        const auto e2{OpBitwiseAnd(U64, OpLoad(U64, eptr), Constant(U64, u64{0x7FFFFFFFFFFFFFFFULL}))};
-        const auto off{OpBitwiseAnd(U64, addr, Constant(U64, VideoCore::BufferCache::CACHING_PAGESIZE - 1))};
+        const auto e2{
+            OpBitwiseAnd(U64, OpLoad(U64, eptr), Constant(U64, u64{0x7FFFFFFFFFFFFFFFULL}))};
+        const auto off{
+            OpBitwiseAnd(U64, addr, Constant(U64, VideoCore::BufferCache::CACHING_PAGESIZE - 1))};
         const auto home{OpIAdd(U64, e2, off)};
         const auto p2{OpConvertUToPtr(physical_pointer_type_u32, home)};
         OpStore(p2, value, spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned, 4u);
@@ -1392,18 +1399,22 @@ Id EmitContext::DefineWriteConst() {
         const auto [dual_buffer_id, dual_pointer_type] = dual_buffer.Alias(PointerType::U64);
         const auto page{OpShiftRightLogical(
             U64, addr, Constant(U64, u64{VideoCore::BufferCache::CACHING_PAGEBITS}))};
-        const auto rel{OpISub(U64, page, Constant(U64, VideoCore::BufferCache::DUAL_WINDOW_BASE_PAGE))};
+        const auto rel{
+            OpISub(U64, page, Constant(U64, VideoCore::BufferCache::DUAL_WINDOW_BASE_PAGE))};
         const auto idx{OpUMin(U64, rel, Constant(U64, VideoCore::BufferCache::DUAL_WINDOW_PAGES))};
         const auto idx32{OpUConvert(U32[1], idx)};
-        const auto tidx{OpIAdd(U32[1], idx32,
-                               ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES)))};
+        const auto tidx{OpIAdd(
+            U32[1], idx32, ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES)))};
         const auto eptr{OpAccessChain(dual_pointer_type, dual_buffer_id, u32_zero_value, tidx)};
-        const auto e2{OpBitwiseAnd(U64, OpLoad(U64, eptr), Constant(U64, u64{0x7FFFFFFFFFFFFFFFULL}))};
-        const auto off{OpBitwiseAnd(U64, addr, Constant(U64, VideoCore::BufferCache::CACHING_PAGESIZE - 1))};
+        const auto e2{
+            OpBitwiseAnd(U64, OpLoad(U64, eptr), Constant(U64, u64{0x7FFFFFFFFFFFFFFFULL}))};
+        const auto off{
+            OpBitwiseAnd(U64, addr, Constant(U64, VideoCore::BufferCache::CACHING_PAGESIZE - 1))};
         const auto home{OpIAdd(U64, e2, off)};
         const auto dst{OpSelect(U64, is_available, bda, home)};
         const Id dst_ptr = OpConvertUToPtr(physical_pointer_type_u32, dst);
-        OpStore(dst_ptr, value, spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned, 4u);
+        OpStore(dst_ptr, value, spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned,
+                4u);
     }
     OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
     // [DROPLOG] Only with the log on does the fault side get a block of its own: the extra
@@ -1425,8 +1436,8 @@ Id EmitContext::DefineWriteConst() {
     AddLabel(available_label);
     if (!fault_store) {
         const Id addr_ptr = OpConvertUToPtr(physical_pointer_type_u32, bda);
-        OpStore(addr_ptr, value,
-                spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned, 4u);
+        OpStore(addr_ptr, value, spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned,
+                4u);
     }
     // Nothing on the host can observe a write made through a raw device address, so the
     // address and value are appended to a log that the host replays into guest memory.
@@ -1435,16 +1446,20 @@ Id EmitContext::DefineWriteConst() {
     if (BdaWriteTrackingEnabled() && PageJournalEnabled()) {
         const auto& pj_buffer{buffers[fault_buffer_index]};
         const auto [pj_id, pj_ptr_type] = pj_buffer.Alias(PointerType::U32);
-        const auto pj_bitmap_base{ConstU32(static_cast<u32>(
-            VideoCore::BufferCache::CACHING_NUMPAGES / 32 + VideoCore::BufferCache::BDA_LOGS_BYTES / 4))};
-        const auto pj_list_base{ConstU32(static_cast<u32>(
-            VideoCore::BufferCache::CACHING_NUMPAGES / 32 + VideoCore::BufferCache::BDA_LOGS_BYTES / 4 +
-            VideoCore::BufferCache::PAGEJ_BITMAP_BYTES / 4))};
+        const auto pj_bitmap_base{
+            ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES / 32 +
+                                      VideoCore::BufferCache::BDA_LOGS_BYTES / 4))};
+        const auto pj_list_base{
+            ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES / 32 +
+                                      VideoCore::BufferCache::BDA_LOGS_BYTES / 4 +
+                                      VideoCore::BufferCache::PAGEJ_BITMAP_BYTES / 4))};
         const auto page32{OpUConvert(
-            U32[1], OpShiftRightLogical(U64, addr,
-                                        Constant(U64, u64{VideoCore::BufferCache::CACHING_PAGEBITS})))};
-        const auto word_idx{OpIAdd(U32[1], pj_bitmap_base, OpShiftRightLogical(U32[1], page32, ConstU32(5U)))};
-        const auto bit{OpShiftLeftLogical(U32[1], u32_one_value, OpBitwiseAnd(U32[1], page32, ConstU32(31U)))};
+            U32[1], OpShiftRightLogical(
+                        U64, addr, Constant(U64, u64{VideoCore::BufferCache::CACHING_PAGEBITS})))};
+        const auto word_idx{
+            OpIAdd(U32[1], pj_bitmap_base, OpShiftRightLogical(U32[1], page32, ConstU32(5U)))};
+        const auto bit{
+            OpShiftLeftLogical(U32[1], u32_one_value, OpBitwiseAnd(U32[1], page32, ConstU32(31U)))};
         const auto word_ptr{OpAccessChain(pj_ptr_type, pj_id, u32_zero_value, word_idx)};
         // [PJCACHE] outer branch: skip everything when the invocation already flagged this page
         const bool pj_cache = PjCacheEnabled();
@@ -1469,7 +1484,8 @@ Id EmitContext::DefineWriteConst() {
         const auto count_ptr{OpAccessChain(pj_ptr_type, pj_id, u32_zero_value, pj_list_base)};
         const auto slot{OpAtomicIAdd(U32[1], count_ptr, ConstU32(1U), ConstU32(0U), u32_one_value)};
         // overflow: the last slot is overwritten (the host reads min(count, capacity))
-        const auto slot_c{OpUMin(U32[1], slot, ConstU32(VideoCore::BufferCache::PAGEJ_LIST_ENTRIES - 1))};
+        const auto slot_c{
+            OpUMin(U32[1], slot, ConstU32(VideoCore::BufferCache::PAGEJ_LIST_ENTRIES - 1))};
         OpStore(OpAccessChain(pj_ptr_type, pj_id, u32_zero_value,
                               OpIAdd(U32[1], OpIAdd(U32[1], pj_list_base, u32_one_value), slot_c)),
                 page32);
@@ -1496,11 +1512,11 @@ Id EmitContext::DefineWriteConst() {
         OpBranchConditional(has_room, store_label, log_merge_label);
 
         AddLabel(store_label);
-        const auto entry_base{
-            OpIAdd(U32[1], OpIAdd(U32[1], log_base, u32_one_value),
-                   OpIMul(U32[1], slot,
-                          ConstU32(VideoCore::BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY)))};
-        const auto addr_lo{OpUConvert(U32[1], OpBitwiseAnd(U64, addr, Constant(U64, u64{0xFFFFFFFF})))};
+        const auto entry_base{OpIAdd(
+            U32[1], OpIAdd(U32[1], log_base, u32_one_value),
+            OpIMul(U32[1], slot, ConstU32(VideoCore::BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY)))};
+        const auto addr_lo{
+            OpUConvert(U32[1], OpBitwiseAnd(U64, addr, Constant(U64, u64{0xFFFFFFFF})))};
         const auto addr_hi{
             OpUConvert(U32[1], OpShiftRightLogical(U64, addr, Constant(U64, u64{32})))};
         OpStore(OpAccessChain(log_ptr_type, log_id, u32_zero_value, entry_base), addr_lo);
@@ -1639,7 +1655,7 @@ Id EmitContext::DefineGetBdaPointer() {
     Id tag_bad{};
     if (tag_entries) {
         const auto want_tag{tag_mode == 2 ? Constant(U64, u64{1})
-                                         : OpBitwiseAnd(U64, page, Constant(U64, u64{0xFFFF}))};
+                                          : OpBitwiseAnd(U64, page, Constant(U64, u64{0xFFFF}))};
         const auto have_tag{OpShiftRightLogical(U64, bda, Constant(U64, u64{48}))};
         tag_bad = OpINotEqual(U1[1], have_tag, want_tag);
     }
@@ -1792,10 +1808,10 @@ Id EmitContext::DefineReadConst(bool dynamic, bool live, bool is_volatile) {
     // always walks honestly. The other three are non-volatile by construction and take the
     // cached walk from level 1 on.
     const bool volatile_load = live && is_volatile;
-    const Id walker = (!volatile_load && BdaCacheLevel() >= 1 &&
-                       Sirit::ValidId(get_bda_pointer_cached))
-                          ? get_bda_pointer_cached
-                          : Id{};
+    const Id walker =
+        (!volatile_load && BdaCacheLevel() >= 1 && Sirit::ValidId(get_bda_pointer_cached))
+            ? get_bda_pointer_cached
+            : Id{};
     if (Sirit::ValidId(walker)) {
         LOG_CRITICAL(Render_Recompiler, "BDACACHE: shader {:#x} {} -> get_bda_pointer_cached",
                      info.pgm_hash, fname);
@@ -1890,19 +1906,19 @@ Id EmitContext::DefineReadConstLivePoll() {
         const auto [slot_id, slot_ptr_type] = slot_buffer.Alias(PointerType::U32);
         // Bitmap device address from the fault buffer slot: {lo, hi} at PollMapSlotDwords().
         const auto slot_dw{ConstU32(VideoCore::BufferCache::PollMapSlotDwords())};
-        const auto map_lo{OpLoad(
-            U32[1], OpAccessChain(slot_ptr_type, slot_id, u32_zero_value, slot_dw))};
+        const auto map_lo{
+            OpLoad(U32[1], OpAccessChain(slot_ptr_type, slot_id, u32_zero_value, slot_dw))};
         const auto map_hi{OpLoad(
             U32[1], OpAccessChain(slot_ptr_type, slot_id, u32_zero_value,
                                   ConstU32(VideoCore::BufferCache::PollMapSlotDwords() + 1)))};
-        const auto map_base{OpBitwiseOr(
-            U64, OpUConvert(U64, map_lo),
-            OpShiftLeftLogical(U64, OpUConvert(U64, map_hi), ConstU32(32U)))};
+        const auto map_base{
+            OpBitwiseOr(U64, OpUConvert(U64, map_lo),
+                        OpShiftLeftLogical(U64, OpUConvert(U64, map_hi), ConstU32(32U)))};
         const auto page{OpShiftRightLogical(
             U64, address, Constant(U64, u64{VideoCore::BufferCache::CACHING_PAGEBITS}))};
         // Outside the 40-bit guest space (stray job pointers) or no bitmap published: skip.
-        const auto in_range{OpULessThan(
-            U1[1], page, Constant(U64, u64{VideoCore::BufferCache::CACHING_NUMPAGES}))};
+        const auto in_range{
+            OpULessThan(U1[1], page, Constant(U64, u64{VideoCore::BufferCache::CACHING_NUMPAGES}))};
         const auto have_map{OpINotEqual(U1[1], map_base, u64_zero_value)};
         const auto last_page{OpLoad(U64, last_page_var)};
         const auto new_page{OpINotEqual(U1[1], page, last_page)};
@@ -1921,14 +1937,14 @@ Id EmitContext::DefineReadConstLivePoll() {
             OpConvertUToPtr(physical_pointer_type_u32, OpIAdd(U64, map_base, fine_word_off))};
         // Volatile like the data load: a hoisted copy of the word would keep the atomics firing
         // on every iteration of the poll after the first mark.
-        const auto fine_word{OpLoad(U32[1], fine_ptr,
-                                    spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned,
-                                    4u)};
+        const auto fine_word{
+            OpLoad(U32[1], fine_ptr,
+                   spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned, 4u)};
         const auto fine_bit{OpShiftLeftLogical(
             U32[1], u32_one_value,
             OpUConvert(U32[1], OpBitwiseAnd(U64, page, Constant(U64, u64{31}))))};
-        const auto unmarked{OpIEqual(U1[1], OpBitwiseAnd(U32[1], fine_word, fine_bit),
-                                     u32_zero_value)};
+        const auto unmarked{
+            OpIEqual(U1[1], OpBitwiseAnd(U32[1], fine_word, fine_bit), u32_zero_value)};
         const Id atomic_label = OpLabel();
         const Id atomic_merge_label = OpLabel();
         OpSelectionMerge(atomic_merge_label, spv::SelectionControlMask::MaskNone);
@@ -1966,8 +1982,7 @@ Id EmitContext::DefineReadConstLivePoll() {
     OpBranch(merge_label);
 
     AddLabel(merge_label);
-    const Id final_result =
-        OpPhi(U32[1], u32_zero_value, fallback_label, result, available_end);
+    const Id final_result = OpPhi(U32[1], u32_zero_value, fallback_label, result, available_end);
     OpReturnValue(final_result);
     OpFunctionEnd();
     return func;
@@ -2042,8 +2057,8 @@ Id EmitContext::DefineWriteConstX(u32 count, bool batch_journal) {
 
     AddLabel(store_label);
     for (u32 i = 0; i < count; ++i) {
-        const Id ptr = OpConvertUToPtr(physical_pointer_type_u32,
-                                       OpIAdd(U64, bda, Constant(U64, u64{4} * i)));
+        const Id ptr =
+            OpConvertUToPtr(physical_pointer_type_u32, OpIAdd(U64, bda, Constant(U64, u64{4} * i)));
         OpStore(ptr, comps[i], spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned,
                 4u);
     }
@@ -2055,8 +2070,7 @@ Id EmitContext::DefineWriteConstX(u32 count, bool batch_journal) {
             ConstU32(static_cast<u32>(VideoCore::BufferCache::CACHING_NUMPAGES / 32))};
         const auto count_ptr{OpAccessChain(log_ptr_type, log_id, u32_zero_value, log_base)};
         const auto capacity{ConstU32(VideoCore::BufferCache::BDA_WRITE_LOG_ENTRIES)};
-        const auto words_per_entry{
-            ConstU32(VideoCore::BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY)};
+        const auto words_per_entry{ConstU32(VideoCore::BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY)};
         const auto write_entry = [&](Id slot, u32 i) {
             const auto entry_base{OpIAdd(U32[1], OpIAdd(U32[1], log_base, u32_one_value),
                                          OpIMul(U32[1], slot, words_per_entry))};
@@ -2112,7 +2126,8 @@ Id EmitContext::DefineWriteConstX(u32 count, bool batch_journal) {
     AddLabel(scalar_label);
     for (u32 i = 0; i < count; ++i) {
         const Id off_i = i == 0 ? offset : OpIAdd(U32[1], offset, ConstU32(i));
-        OpFunctionCall(void_id, write_const_live, base, off_i, OpCompositeExtract(U32[1], value, i));
+        OpFunctionCall(void_id, write_const_live, base, off_i,
+                       OpCompositeExtract(U32[1], value, i));
     }
     OpBranch(merge_label);
 
@@ -2135,8 +2150,8 @@ Id EmitContext::DefineReadConstLiveX4(bool is_volatile) {
     // loads in the worker's inner loop, three per iteration on the same bone-palette page - only
     // at level 2, which is the actual experiment. The 16-byte load keeps its Volatile mask in
     // both cases: only the translation is remembered, never the data.
-    const bool use_cache = Sirit::ValidId(get_bda_pointer_cached) &&
-                           (!is_volatile || BdaCacheLevel() >= 2);
+    const bool use_cache =
+        Sirit::ValidId(get_bda_pointer_cached) && (!is_volatile || BdaCacheLevel() >= 2);
     if (use_cache) {
         LOG_CRITICAL(Render_Recompiler, "BDACACHE: shader {:#x} {} -> get_bda_pointer_cached",
                      info.pgm_hash, fname);
@@ -2168,18 +2183,18 @@ Id EmitContext::DefineReadConstLiveX4(bool is_volatile) {
 
     // One walk, one 16-byte volatile load (unmapped page: the walk marked the fault, read zero)
     AddLabel(vec_label);
-    const Id bda =
-        OpFunctionCall(U64, use_cache ? get_bda_pointer_cached : get_bda_pointer, addr);
+    const Id bda = OpFunctionCall(U64, use_cache ? get_bda_pointer_cached : get_bda_pointer, addr);
     const Id is_available = OpINotEqual(U1[1], bda, u64_zero_value);
     OpSelectionMerge(vec_merge_label, spv::SelectionControlMask::MaskNone);
     OpBranchConditional(is_available, load_label, null_label);
     AddLabel(load_label);
     const Id ptr_type = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[4]);
     const Id addr_ptr = OpConvertUToPtr(ptr_type, bda);
-    const Id vec = OpLoad(U32[4], addr_ptr,
-                          is_volatile ? (spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned)
-                                      : spv::MemoryAccessMask::Aligned,
-                          16u);
+    const Id vec =
+        OpLoad(U32[4], addr_ptr,
+               is_volatile ? (spv::MemoryAccessMask::Volatile | spv::MemoryAccessMask::Aligned)
+                           : spv::MemoryAccessMask::Aligned,
+               16u);
     OpBranch(vec_merge_label);
     AddLabel(null_label);
     const Id zero4 = ConstantNull(U32[4]);
@@ -2193,7 +2208,8 @@ Id EmitContext::DefineReadConstLiveX4(bool is_volatile) {
     std::array<Id, 4> dw{};
     for (u32 i = 0; i < 4; ++i) {
         const Id off_i = i == 0 ? offset : OpIAdd(U32[1], offset, ConstU32(i));
-        dw[i] = OpFunctionCall(U32[1], is_volatile ? read_const_live : read_const_live_nv, base, off_i);
+        dw[i] =
+            OpFunctionCall(U32[1], is_volatile ? read_const_live : read_const_live_nv, base, off_i);
     }
     const Id scalar_result = OpCompositeConstruct(U32[4], dw[0], dw[1], dw[2], dw[3]);
     OpBranch(merge_label);
@@ -2268,8 +2284,8 @@ void EmitContext::DefineFunctions() {
                      static_cast<u32>(info.uses_patches),
                      static_cast<u32>(info.stores_tess_level_inner),
                      static_cast<u32>(info.stores_tess_level_outer), info.buffers.size(),
-                     info.images.size(), info.samplers.size(),
-                     static_cast<u32>(info.shared_types), static_cast<u32>(info.uses_poll_read));
+                     info.images.size(), info.samplers.size(), static_cast<u32>(info.shared_types),
+                     static_cast<u32>(info.uses_poll_read));
         get_bda_pointer = DefineGetBdaPointer();
         // [BDACACHE] One wrapper shared by every flavour allowed to remember a translation, so a
         // straight-line run of reads on one page (bone palette, SRT page) pays a single walk.
@@ -2312,7 +2328,8 @@ void EmitContext::DefineFunctions() {
             LOG_CRITICAL(Render_Recompiler, "DUALHOME: shader {:#x} dual store on", info.pgm_hash);
         }
         if (DualHomeFaultStoreEnabled()) {
-            LOG_CRITICAL(Render_Recompiler, "DUALHOME: shader {:#x} fault-path store to home on", info.pgm_hash);
+            LOG_CRITICAL(Render_Recompiler, "DUALHOME: shader {:#x} fault-path store to home on",
+                         info.pgm_hash);
         }
         if (LiveVec4Enabled()) {
             LOG_CRITICAL(Render_Recompiler, "LIVEVEC4: shader {:#x} defines read_const_live_x4",
@@ -2332,7 +2349,8 @@ void EmitContext::DefineFunctions() {
         LOG_DEBUG(Render_Recompiler, "Shader {:#x} uses live WriteConst", info.pgm_hash);
         write_const_live = DefineWriteConst();
         if (LiveVec4Level() >= 2) {
-            LOG_CRITICAL(Render_Recompiler, "LIVEVEC4: shader {:#x} defines write_const_live_x2..4 (batch={})",
+            LOG_CRITICAL(Render_Recompiler,
+                         "LIVEVEC4: shader {:#x} defines write_const_live_x2..4 (batch={})",
                          info.pgm_hash, LiveVec4Level() >= 3);
             for (u32 n = 2; n <= 4; ++n) {
                 write_const_live_x[n] = DefineWriteConstX(n, LiveVec4Level() >= 3);

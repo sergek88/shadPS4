@@ -244,8 +244,7 @@ u32 SkinBatch::MaxJobs() {
 
 u32 SkinBatch::MaxGroups() {
     // group_in_job < 1 << JobShift; the map (4 B per group) must fit the ring with the table.
-    static const u32 v =
-        std::clamp<u32>(EnvU32("SHADPS4_CSBATCH_MAXGROUPS", 65536), 1u, 262144u);
+    static const u32 v = std::clamp<u32>(EnvU32("SHADPS4_CSBATCH_MAXGROUPS", 65536), 1u, 262144u);
     return v;
 }
 

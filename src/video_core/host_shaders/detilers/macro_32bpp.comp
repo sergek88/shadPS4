@@ -81,7 +81,7 @@ void main() {
     uint byte_ofs = gl_LocalInvocationID.x & 3u;
     uint idx = bitfieldExtract(idx_dw >> (8 * byte_ofs), 0, 8);
 
-    uint slice_offs = (z >> 2u) * info.c1 * MICRO_TILE_SZ; 
+    uint slice_offs = (z >> 2u) * info.c1 * MICRO_TILE_SZ;
     uint tile_row = y / MICRO_TILE_DIM;
     uint tile_column = x / MICRO_TILE_DIM;
     uint tile_offs = ((tile_row * info.c0) + tile_column) * MICRO_TILE_SZ;

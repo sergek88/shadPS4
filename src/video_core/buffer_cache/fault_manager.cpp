@@ -20,8 +20,8 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
-#include "video_core/host_shaders/fault_buffer_process_comp.h"
 #include "video_core/host_shaders/dual_writeback_comp.h"
+#include "video_core/host_shaders/fault_buffer_process_comp.h"
 
 namespace VideoCore {
 
@@ -90,12 +90,20 @@ FaultManager::FaultManager(const Vulkan::Instance& instance, Vulkan::Scheduler& 
     : scheduler{scheduler_}, buffer_cache{buffer_cache_},
       caching_pagesize{1ULL << caching_pagebits}, caching_num_pages{caching_num_pages_},
       fault_buffer_size{caching_num_pages_ / 8},
-      fault_buffer{instance, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
+      fault_buffer{instance,
+                   scheduler,
+                   MemoryUsage::DeviceLocal,
+                   0,
+                   AllFlags,
                    fault_buffer_size + BufferCache::BDA_LOGS_BYTES + BufferCache::PAGEJ_BYTES +
                        PollFaultBytes() + PollMapFaultBytes()},
-      download_buffer{instance, scheduler, MemoryUsage::Download, 0, AllFlags,
-                      MaxPendingFaults * PageFaultAreaSize + BufferCache::BDA_LOGS_BYTES + BufferCache::PAGEJ_LIST_BYTES +
-                          MaxPendingFaults * PollDownloadBytes()} {
+      download_buffer{instance,
+                      scheduler,
+                      MemoryUsage::Download,
+                      0,
+                      AllFlags,
+                      MaxPendingFaults * PageFaultAreaSize + BufferCache::BDA_LOGS_BYTES +
+                          BufferCache::PAGEJ_LIST_BYTES + MaxPendingFaults * PollDownloadBytes()} {
     const auto device = instance.GetDevice();
     Vulkan::SetObjectName(device, fault_buffer.Handle(), "Fault Buffer");
 
@@ -224,8 +232,9 @@ FaultManager::FaultManager(const Vulkan::Instance& instance, Vulkan::Scheduler& 
             fmt::format("WINDOW_BASE_PAGE={}u", BufferCache::DUAL_WINDOW_BASE_PAGE),
             fmt::format("WINDOW_PAGES={}u", BufferCache::DUAL_WINDOW_PAGES),
         }};
-        const auto wb_module = Vulkan::Compile(HostShaders::DUAL_WRITEBACK_COMP,
-                                               vk::ShaderStageFlagBits::eCompute, device, wb_defines);
+        const auto wb_module =
+            Vulkan::Compile(HostShaders::DUAL_WRITEBACK_COMP, vk::ShaderStageFlagBits::eCompute,
+                            device, wb_defines);
         Vulkan::SetObjectName(device, wb_module, "Dual Home Writeback");
         const vk::PipelineShaderStageCreateInfo wb_stage = {
             .stage = vk::ShaderStageFlagBits::eCompute,
@@ -365,8 +374,8 @@ void FaultManager::ProcessFaultBuffer() {
         });
         cmdbuf.fillBuffer(fault_buffer.Handle(), fault_buffer_size, sizeof(u32), 0);
         // [DROPLOG] and the counter of the dropped-write log behind it
-        cmdbuf.fillBuffer(fault_buffer.Handle(), fault_buffer_size + BufferCache::BDA_WRITE_LOG_BYTES,
-                          sizeof(u32), 0);
+        cmdbuf.fillBuffer(fault_buffer.Handle(),
+                          fault_buffer_size + BufferCache::BDA_WRITE_LOG_BYTES, sizeof(u32), 0);
         // [DUALHOME v2] before the list is copied out and cleared: copy every listed page from
         // its VRAM owner into its guest-memory home, in command order after this batch's work.
         if (PageJournalEnabled() && BufferCache::DualHomeEnabled() && dual_wb_pipeline) {
@@ -374,7 +383,8 @@ void FaultManager::ProcessFaultBuffer() {
                 .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
                 .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
                 .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-                .dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
+                .dstAccessMask =
+                    vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
             };
             cmdbuf.pipelineBarrier2(vk::DependencyInfo{
                 .memoryBarrierCount = 1,
@@ -390,7 +400,8 @@ void FaultManager::ProcessFaultBuffer() {
             };
             const vk::DescriptorBufferInfo wb_list_info = {
                 .buffer = fault_buffer.Handle(),
-                .offset = fault_buffer_size + BufferCache::BDA_LOGS_BYTES + BufferCache::PAGEJ_BITMAP_BYTES,
+                .offset = fault_buffer_size + BufferCache::BDA_LOGS_BYTES +
+                          BufferCache::PAGEJ_BITMAP_BYTES,
                 .range = BufferCache::PAGEJ_LIST_BYTES,
             };
             const std::array<vk::WriteDescriptorSet, 2> wb_writes = {{
@@ -418,7 +429,8 @@ void FaultManager::ProcessFaultBuffer() {
                 .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
                 .srcAccessMask = vk::AccessFlagBits2::eShaderWrite,
                 .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
-                .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+                .dstAccessMask =
+                    vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
             };
             cmdbuf.pipelineBarrier2(vk::DependencyInfo{
                 .memoryBarrierCount = 1,
@@ -427,8 +439,8 @@ void FaultManager::ProcessFaultBuffer() {
         }
         // [PAGEJOURNAL] pull the page list across, then clear the bitmap and the list count
         if (PageJournalEnabled()) {
-            const u64 pj_list_src = fault_buffer_size + BufferCache::BDA_LOGS_BYTES +
-                                    BufferCache::PAGEJ_BITMAP_BYTES;
+            const u64 pj_list_src =
+                fault_buffer_size + BufferCache::BDA_LOGS_BYTES + BufferCache::PAGEJ_BITMAP_BYTES;
             cmdbuf.copyBuffer(fault_buffer.Handle(), download_buffer.Handle(),
                               vk::BufferCopy{
                                   .srcOffset = pj_list_src,
@@ -449,7 +461,8 @@ void FaultManager::ProcessFaultBuffer() {
                 .bufferMemoryBarrierCount = 1,
                 .pBufferMemoryBarriers = &pj_barrier,
             });
-            cmdbuf.fillBuffer(fault_buffer.Handle(), fault_buffer_size + BufferCache::BDA_LOGS_BYTES,
+            cmdbuf.fillBuffer(fault_buffer.Handle(),
+                              fault_buffer_size + BufferCache::BDA_LOGS_BYTES,
                               BufferCache::PAGEJ_BITMAP_BYTES + sizeof(u32), 0);
         }
     }
@@ -623,144 +636,150 @@ void FaultManager::ProcessFaultBuffer() {
         scheduler.DeferPriorityOperation(pollj_fold);
     }
     if (write_log_enabled)
-    scheduler.DeferPriorityOperation([this, log_mapped, pollj_fold] {
-        const u32* log = std::bit_cast<const u32*>(log_mapped);
-        const u32 requested = log[0];
-        const u32 applied = std::min(requested, BufferCache::BDA_WRITE_LOG_ENTRIES);
-        if (requested > BufferCache::BDA_WRITE_LOG_ENTRIES) {
-            LOG_CRITICAL(Render_Vulkan, "BDALOG-OVERFLOW: raw-address write log overflowed: {} of {} entries kept",
-                        BufferCache::BDA_WRITE_LOG_ENTRIES, requested);
-        }
-        {
-            // How much the GPU actually writes through raw addresses, once every 5 s.
-            static u64 total = 0;
-            static u64 batches = 0;
-            static auto next = std::chrono::steady_clock::now();
-            total += applied;
-            ++batches;
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= next) {
-                next = now + std::chrono::seconds(5);
-                LOG_CRITICAL(Render_Vulkan, "BDALOG: {} writes replayed over {} batches", total,
-                             batches);
-                total = 0;
-                batches = 0;
+        scheduler.DeferPriorityOperation([this, log_mapped, pollj_fold] {
+            const u32* log = std::bit_cast<const u32*>(log_mapped);
+            const u32 requested = log[0];
+            const u32 applied = std::min(requested, BufferCache::BDA_WRITE_LOG_ENTRIES);
+            if (requested > BufferCache::BDA_WRITE_LOG_ENTRIES) {
+                LOG_CRITICAL(
+                    Render_Vulkan,
+                    "BDALOG-OVERFLOW: raw-address write log overflowed: {} of {} entries kept",
+                    BufferCache::BDA_WRITE_LOG_ENTRIES, requested);
             }
-        }
-        auto* memory = Core::Memory::Instance();
-        // [LIVEREPLAY] SHADPS4_LIVEREPLAY_SKIP=1: a write that the GPU already put into an
-        // imported backing page (= guest memory) is not replayed; the replay would land up to a
-        // submit later and could overwrite what the CPU wrote to that slot in the meantime.
-        // =1: the GPU decides (page-table bit 63, write_const_live skips the log itself) and
-        //     the host replays everything that still reaches the log - a write made while the
-        //     entry was not yet published (fault path) must still land through the replay.
-        // =2: host-side decision by CPU page_table ownership (lossy in that publish window;
-        //     liveloop12 crashed on it), kept for comparison only.
-        static const bool skip_landed = [] {
-            const char* e = std::getenv("SHADPS4_LIVEREPLAY_SKIP");
-            return e && e[0] == '2';
-        }();
-        static const bool skip_stats = [] {
-            const char* e = std::getenv("SHADPS4_LIVEREPLAY_SKIP");
-            return e && (e[0] == '1' || e[0] == '2');
-        }();
-        static u64 skipped_total = 0;
-        static u64 replayed_total = 0;
-        static auto skip_next = std::chrono::steady_clock::now();
-        u32 skipped = 0;
-        for (u32 i = 0; i < applied; ++i) {
-            const u32* entry = log + 1 + i * BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY;
-            const VAddr addr = (u64{entry[1]} << 32) | entry[0];
-            const u32 value = entry[2];
-            if (skip_landed && buffer_cache.LiveWriteLandsInGuest(addr)) {
-                ++skipped;
-                continue;
+            {
+                // How much the GPU actually writes through raw addresses, once every 5 s.
+                static u64 total = 0;
+                static u64 batches = 0;
+                static auto next = std::chrono::steady_clock::now();
+                total += applied;
+                ++batches;
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= next) {
+                    next = now + std::chrono::seconds(5);
+                    LOG_CRITICAL(Render_Vulkan, "BDALOG: {} writes replayed over {} batches", total,
+                                 batches);
+                    total = 0;
+                    batches = 0;
+                }
             }
-            memory->TryWriteBacking(std::bit_cast<u8*>(addr), &value, sizeof(value));
-        }
-        // [DROPLOG] first-touch writes the GPU had to drop: land them now. Nothing here
-        // depends on caching state - guest memory is the home the CPU reads.
-        {
-            const u32* dlog =
-                std::bit_cast<const u32*>(log_mapped + BufferCache::BDA_WRITE_LOG_BYTES);
-            const u32 drequested = dlog[0];
-            const u32 dapplied = std::min(drequested, BufferCache::BDA_DROP_LOG_ENTRIES);
-            for (u32 i = 0; i < dapplied; ++i) {
-                const u32* entry = dlog + 1 + i * BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY;
+            auto* memory = Core::Memory::Instance();
+            // [LIVEREPLAY] SHADPS4_LIVEREPLAY_SKIP=1: a write that the GPU already put into an
+            // imported backing page (= guest memory) is not replayed; the replay would land up to a
+            // submit later and could overwrite what the CPU wrote to that slot in the meantime.
+            // =1: the GPU decides (page-table bit 63, write_const_live skips the log itself) and
+            //     the host replays everything that still reaches the log - a write made while the
+            //     entry was not yet published (fault path) must still land through the replay.
+            // =2: host-side decision by CPU page_table ownership (lossy in that publish window;
+            //     liveloop12 crashed on it), kept for comparison only.
+            static const bool skip_landed = [] {
+                const char* e = std::getenv("SHADPS4_LIVEREPLAY_SKIP");
+                return e && e[0] == '2';
+            }();
+            static const bool skip_stats = [] {
+                const char* e = std::getenv("SHADPS4_LIVEREPLAY_SKIP");
+                return e && (e[0] == '1' || e[0] == '2');
+            }();
+            static u64 skipped_total = 0;
+            static u64 replayed_total = 0;
+            static auto skip_next = std::chrono::steady_clock::now();
+            u32 skipped = 0;
+            for (u32 i = 0; i < applied; ++i) {
+                const u32* entry = log + 1 + i * BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY;
                 const VAddr addr = (u64{entry[1]} << 32) | entry[0];
                 const u32 value = entry[2];
+                if (skip_landed && buffer_cache.LiveWriteLandsInGuest(addr)) {
+                    ++skipped;
+                    continue;
+                }
                 memory->TryWriteBacking(std::bit_cast<u8*>(addr), &value, sizeof(value));
-                PageTrace::Note(addr, PageTrace::DL);
             }
-            static u64 drop_total = 0;
-            static u64 drop_lost = 0;
-            static u64 drop_batches = 0;
-            static VAddr drop_last = 0;
-            static auto drop_next = std::chrono::steady_clock::now();
-            drop_total += dapplied;
-            drop_lost += drequested - dapplied;
-            ++drop_batches;
-            if (dapplied != 0) {
-                const u32* last = dlog + 1 + (dapplied - 1) * BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY;
-                drop_last = (u64{last[1]} << 32) | last[0];
+            // [DROPLOG] first-touch writes the GPU had to drop: land them now. Nothing here
+            // depends on caching state - guest memory is the home the CPU reads.
+            {
+                const u32* dlog =
+                    std::bit_cast<const u32*>(log_mapped + BufferCache::BDA_WRITE_LOG_BYTES);
+                const u32 drequested = dlog[0];
+                const u32 dapplied = std::min(drequested, BufferCache::BDA_DROP_LOG_ENTRIES);
+                for (u32 i = 0; i < dapplied; ++i) {
+                    const u32* entry = dlog + 1 + i * BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY;
+                    const VAddr addr = (u64{entry[1]} << 32) | entry[0];
+                    const u32 value = entry[2];
+                    memory->TryWriteBacking(std::bit_cast<u8*>(addr), &value, sizeof(value));
+                    PageTrace::Note(addr, PageTrace::DL);
+                }
+                static u64 drop_total = 0;
+                static u64 drop_lost = 0;
+                static u64 drop_batches = 0;
+                static VAddr drop_last = 0;
+                static auto drop_next = std::chrono::steady_clock::now();
+                drop_total += dapplied;
+                drop_lost += drequested - dapplied;
+                ++drop_batches;
+                if (dapplied != 0) {
+                    const u32* last =
+                        dlog + 1 + (dapplied - 1) * BufferCache::BDA_WRITE_LOG_WORDS_PER_ENTRY;
+                    drop_last = (u64{last[1]} << 32) | last[0];
+                }
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= drop_next) {
+                    drop_next = now + std::chrono::seconds(5);
+                    if (drop_total != 0 || drop_lost != 0) {
+                        LOG_CRITICAL(
+                            Render_Vulkan,
+                            "DROPLOG: {} first-touch writes landed, {} lost (overflow), {} "
+                            "batches, last {:#x}",
+                            drop_total, drop_lost, drop_batches, drop_last);
+                    }
+                    drop_total = 0;
+                    drop_lost = 0;
+                    drop_batches = 0;
+                }
             }
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= drop_next) {
-                drop_next = now + std::chrono::seconds(5);
-                if (drop_total != 0 || drop_lost != 0) {
+            // [PAGEJOURNAL] pages the GPU wrote this batch -> readback protection (VRAM pages only)
+            if (PageJournalEnabled()) {
+                const u32* plist =
+                    std::bit_cast<const u32*>(log_mapped + BufferCache::BDA_LOGS_BYTES);
+                const u32 prequested = plist[0];
+                const u32 papplied = std::min(prequested, BufferCache::PAGEJ_LIST_ENTRIES);
+                for (u32 i = 0; i < papplied; ++i) {
+                    const u64 page = plist[1 + i];
+                    if (page < BufferCache::CACHING_NUMPAGES) {
+                        buffer_cache.NoteGpuWrittenPage(page << BufferCache::CACHING_PAGEBITS);
+                        PageTrace::Note(page << BufferCache::CACHING_PAGEBITS, PageTrace::GW);
+                    }
+                }
+                static u64 pj_total = 0;
+                static u64 pj_lost = 0;
+                static u64 pj_batches = 0;
+                static auto pj_next = std::chrono::steady_clock::now();
+                pj_total += papplied;
+                pj_lost += prequested - papplied;
+                ++pj_batches;
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= pj_next) {
+                    pj_next = now + std::chrono::seconds(5);
                     LOG_CRITICAL(Render_Vulkan,
-                                 "DROPLOG: {} first-touch writes landed, {} lost (overflow), {} "
-                                 "batches, last {:#x}",
-                                 drop_total, drop_lost, drop_batches, drop_last);
-                }
-                drop_total = 0;
-                drop_lost = 0;
-                drop_batches = 0;
-            }
-        }
-        // [PAGEJOURNAL] pages the GPU wrote this batch -> readback protection (VRAM pages only)
-        if (PageJournalEnabled()) {
-            const u32* plist = std::bit_cast<const u32*>(log_mapped + BufferCache::BDA_LOGS_BYTES);
-            const u32 prequested = plist[0];
-            const u32 papplied = std::min(prequested, BufferCache::PAGEJ_LIST_ENTRIES);
-            for (u32 i = 0; i < papplied; ++i) {
-                const u64 page = plist[1 + i];
-                if (page < BufferCache::CACHING_NUMPAGES) {
-                    buffer_cache.NoteGpuWrittenPage(page << BufferCache::CACHING_PAGEBITS);
-                    PageTrace::Note(page << BufferCache::CACHING_PAGEBITS, PageTrace::GW);
+                                 "PAGEJ: {} written pages marked, {} lost, {} batches", pj_total,
+                                 pj_lost, pj_batches);
+                    pj_total = 0;
+                    pj_lost = 0;
+                    pj_batches = 0;
                 }
             }
-            static u64 pj_total = 0;
-            static u64 pj_lost = 0;
-            static u64 pj_batches = 0;
-            static auto pj_next = std::chrono::steady_clock::now();
-            pj_total += papplied;
-            pj_lost += prequested - papplied;
-            ++pj_batches;
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= pj_next) {
-                pj_next = now + std::chrono::seconds(5);
-                LOG_CRITICAL(Render_Vulkan, "PAGEJ: {} written pages marked, {} lost, {} batches",
-                             pj_total, pj_lost, pj_batches);
-                pj_total = 0;
-                pj_lost = 0;
-                pj_batches = 0;
+            if (skip_stats) {
+                skipped_total += skipped;
+                replayed_total += applied - skipped;
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= skip_next) {
+                    skip_next = now + std::chrono::seconds(5);
+                    LOG_CRITICAL(Render_Vulkan, "LIVEREPLAY: {} landed live (skipped), {} replayed",
+                                 skipped_total, replayed_total);
+                    skipped_total = 0;
+                    replayed_total = 0;
+                }
             }
-        }
-        if (skip_stats) {
-            skipped_total += skipped;
-            replayed_total += applied - skipped;
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= skip_next) {
-                skip_next = now + std::chrono::seconds(5);
-                LOG_CRITICAL(Render_Vulkan, "LIVEREPLAY: {} landed live (skipped), {} replayed",
-                             skipped_total, replayed_total);
-                skipped_total = 0;
-                replayed_total = 0;
-            }
-        }
-        pollj_fold();
-    });
+            pollj_fold();
+        });
 
     scheduler.DeferOperation([this, mapped, area = current_area] {
         fault_ranges.Clear();
@@ -863,10 +882,11 @@ void FaultManager::ProcessFaultBuffer() {
                     static std::atomic<u64> skin_rejected{0};
                     const u64 sn = skin_rejected.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (sn <= 16 || (sn % 512) == 0) {
-                        LOG_CRITICAL(Render_Vulkan,
-                                     "SKINVRAM: GPU touched synthetic page {:#x} with no page-table "
-                                     "entry ({} such pages) - the publish did not land",
-                                     page, sn);
+                        LOG_CRITICAL(
+                            Render_Vulkan,
+                            "SKINVRAM: GPU touched synthetic page {:#x} with no page-table "
+                            "entry ({} such pages) - the publish did not land",
+                            page, sn);
                     }
                 } else if (n <= 16 || (n % 512) == 0) {
                     LOG_WARNING(Render_Vulkan,

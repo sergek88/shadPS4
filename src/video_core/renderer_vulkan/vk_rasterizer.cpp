@@ -1,21 +1,21 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
-#include <string>
 #include <cstdlib>
-#include <atomic>
-#include <algorithm>
+#include <cstring> // [CSBATCH]
 #include <deque>
+#include <span> // [CSBATCH]
+#include <string>
+#include <thread> // [CSBATCH]
+#include <tuple>  // [CSBATCH]
 #include <unordered_map>
 #include <unordered_set> // [CSSPLIT] once-per-shader census notes
 #include <vector>
-#include <cstring>   // [CSBATCH]
-#include <span>      // [CSBATCH]
-#include <thread>    // [CSBATCH]
-#include <tuple>     // [CSBATCH]
 #include <boost/container/static_vector.hpp> // [CSBATCH]
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -140,7 +140,7 @@ static SubmitRec& SubmitSlot(u64 tick) {
 namespace AddrBind {
 extern std::atomic<u64> g_draw_tick; // vk_platform.cpp, inside namespace Vulkan
 void DumpHandle(u64 handle);         // vk_platform.cpp: VA history of one object handle
-}
+} // namespace AddrBind
 
 // [BINDLOG] color target 0 of the draw being recorded (VkImage handle), set in BeginRendering.
 static u64 g_rt_image[8]{};
@@ -281,8 +281,7 @@ static bool OnWorker() {
     if (g_seen >= c.count) {
         if (g_active) {
             g_active = false;
-            LOG_CRITICAL(Render_Vulkan, "SEQLOG: window closed after {} worker dispatches",
-                         g_seen);
+            LOG_CRITICAL(Render_Vulkan, "SEQLOG: window closed after {} worker dispatches", g_seen);
         }
         return false;
     }
@@ -324,8 +323,8 @@ static void RecordDispatchTick(u64 tick, u64 hash, u32 gx, u32 gy, u32 gz) {
 // has been in flight beyond `slow_ms` - the signature of a shader that never exits its loop.
 void DumpStalledSubmits(u64 gpu_tick, u64 waiting_tick, u64 slow_ms) {
     const s64 now = Postmortem::NowMs();
-    std::string line = fmt::format("GPUSTALL-SUBMIT: waiting_tick={} current={} |", waiting_tick,
-                                   gpu_tick);
+    std::string line =
+        fmt::format("GPUSTALL-SUBMIT: waiting_tick={} current={} |", waiting_tick, gpu_tick);
     for (u64 t = gpu_tick + 1; t <= waiting_tick && t <= gpu_tick + kSubmitRing; ++t) {
         const SubmitRec& r = g_submit_ring[t % kSubmitRing];
         if (r.tick.load(std::memory_order_relaxed) != t) {
@@ -333,8 +332,8 @@ void DumpStalledSubmits(u64 gpu_tick, u64 waiting_tick, u64 slow_ms) {
             continue;
         }
         const u32 nd = r.dispatches.load(std::memory_order_relaxed);
-        line += fmt::format(" tick{}: draws={} disp={}", t,
-                            r.draws.load(std::memory_order_relaxed), nd);
+        line += fmt::format(" tick{}: draws={} disp={}", t, r.draws.load(std::memory_order_relaxed),
+                            nd);
         for (u32 i = 0; i < std::min<u32>(nd, 12); ++i) {
             line += fmt::format(" pgm={:#x}", r.hashes[i].load(std::memory_order_relaxed));
         }
@@ -359,12 +358,10 @@ void DumpStalledSubmits(u64 gpu_tick, u64 waiting_tick, u64 slow_ms) {
             continue;
         }
         for (u32 i = 0; i < std::min<u32>(nd, 12); ++i) {
-            LOG_CRITICAL(Render_Vulkan,
-                         "GPUSTALL-SHADER: pgm={:#x} groups=({},{},{}) inflight={}ms tick={}",
-                         r.hashes[i].load(std::memory_order_relaxed),
-                         r.gx.load(std::memory_order_relaxed),
-                         r.gy.load(std::memory_order_relaxed),
-                         r.gz.load(std::memory_order_relaxed), age, t);
+            LOG_CRITICAL(
+                Render_Vulkan, "GPUSTALL-SHADER: pgm={:#x} groups=({},{},{}) inflight={}ms tick={}",
+                r.hashes[i].load(std::memory_order_relaxed), r.gx.load(std::memory_order_relaxed),
+                r.gy.load(std::memory_order_relaxed), r.gz.load(std::memory_order_relaxed), age, t);
         }
     }
 }
@@ -375,10 +372,9 @@ void DumpRecentDispatches() {
     LOG_WARNING(Render_Vulkan, "STUCKDISP: last {} dispatches (of {} total), newest last:", n,
                 total);
     for (u32 i = 0; i < n; ++i) {
-        const auto& d =
-            g_recent_disp[(total - n + i) % static_cast<u32>(g_recent_disp.size())];
-        LOG_WARNING(Render_Vulkan, "STUCKDISP: frame={} cs={:#x} groups={}x{}x{}", d.frame,
-                    d.hash, d.gx, d.gy, d.gz);
+        const auto& d = g_recent_disp[(total - n + i) % static_cast<u32>(g_recent_disp.size())];
+        LOG_WARNING(Render_Vulkan, "STUCKDISP: frame={} cs={:#x} groups={}x{}x{}", d.frame, d.hash,
+                    d.gx, d.gy, d.gz);
     }
 }
 
@@ -612,10 +608,10 @@ struct GpuProf {
     u64 last_report_frame{0};
     u64 last_frame_seen{0};
     u64 frames_in_window{0};
-    u64 prev_end{0};   // end timestamp of the previous collected event (submission order)
-    u64 gap_ns{0};     // GPU idle between consecutive events
+    u64 prev_end{0}; // end timestamp of the previous collected event (submission order)
+    u64 gap_ns{0};   // GPU idle between consecutive events
     u64 gap_n{0};
-    u64 rp_last{0};    // Parserprof::g_rp_ends at the previous report
+    u64 rp_last{0}; // Parserprof::g_rp_ends at the previous report
     // [GPUPROF-GAPS] where the idle time sits: inside one submit (barriers/drains between
     // events) or between submits (the GPU ran dry waiting for the CPU), split by the kind of
     // the event that preceded the gap, plus a size histogram (<10us, 10-50, 50-200, >200us).
@@ -628,7 +624,8 @@ struct GpuProf {
     std::array<u64, 4> gap_hist_ns{};
 };
 GpuProf g_gpuprof;
-std::atomic<u64> g_gpuprof_rp_breaks{0}; // render passes ended by compute/other work (see Scheduler)
+std::atomic<u64> g_gpuprof_rp_breaks{
+    0}; // render passes ended by compute/other work (see Scheduler)
 } // namespace
 // [CSBARRIER] set by the command processor on ACQUIRE_MEM (the game's own sync point); the next
 // dispatch keeps its buffer barriers even in lax mode. Same thread (GpuCommandProcessor).
@@ -791,7 +788,8 @@ void GpuProfCollect(Scheduler& scheduler) {
         g.dev.resetQueryPool(g.pool, ev.query, 2);
         if (r == vk::Result::eSuccess && ts[1] >= ts[0]) {
             if (g.prev_end != 0 && ts[0] > g.prev_end) {
-                const u64 gap = static_cast<u64>(static_cast<double>(ts[0] - g.prev_end) * g.period_ns);
+                const u64 gap =
+                    static_cast<u64>(static_cast<double>(ts[0] - g.prev_end) * g.period_ns);
                 g.gap_ns += gap;
                 ++g.gap_n;
                 if (ev.tick == g.prev_tick) {
@@ -853,14 +851,16 @@ void GpuProfCollect(Scheduler& scheduler) {
         LOG_CRITICAL(Render_Vulkan,
                      "GPUPROF-GAPS: in-submit={:.2f} ms/frame ({:.0f}/frame) cross-submit={:.2f} "
                      "ms/frame ({:.1f}/frame) | after draw={:.2f} drawind={:.2f} disp={:.2f} "
-                     "dispind={:.2f} prep={:.2f} ms/frame | hist <10us {:.0f}/{:.2f}ms  10-50us {:.0f}/{:.2f}ms  "
+                     "dispind={:.2f} prep={:.2f} ms/frame | hist <10us {:.0f}/{:.2f}ms  10-50us "
+                     "{:.0f}/{:.2f}ms  "
                      "50-200us {:.0f}/{:.2f}ms  >200us {:.1f}/{:.2f}ms (per frame)",
                      g.gap_in_ns / 1e6 / fr, g.gap_in_n / fr, g.gap_cross_ns / 1e6 / fr,
                      g.gap_cross_n / fr, g.gap_after_ns[0] / 1e6 / fr, g.gap_after_ns[1] / 1e6 / fr,
-                     g.gap_after_ns[2] / 1e6 / fr, g.gap_after_ns[3] / 1e6 / fr, g.gap_after_ns[4] / 1e6 / fr,
-                     g.gap_hist_n[0] / fr, g.gap_hist_ns[0] / 1e6 / fr, g.gap_hist_n[1] / fr,
-                     g.gap_hist_ns[1] / 1e6 / fr, g.gap_hist_n[2] / fr, g.gap_hist_ns[2] / 1e6 / fr,
-                     g.gap_hist_n[3] / fr, g.gap_hist_ns[3] / 1e6 / fr);
+                     g.gap_after_ns[2] / 1e6 / fr, g.gap_after_ns[3] / 1e6 / fr,
+                     g.gap_after_ns[4] / 1e6 / fr, g.gap_hist_n[0] / fr,
+                     g.gap_hist_ns[0] / 1e6 / fr, g.gap_hist_n[1] / fr, g.gap_hist_ns[1] / 1e6 / fr,
+                     g.gap_hist_n[2] / fr, g.gap_hist_ns[2] / 1e6 / fr, g.gap_hist_n[3] / fr,
+                     g.gap_hist_ns[3] / 1e6 / fr);
         g.gap_in_ns = g.gap_in_n = g.gap_cross_ns = g.gap_cross_n = 0;
         g.gap_after_ns.fill(0);
         g.gap_hist_n.fill(0);
@@ -871,9 +871,11 @@ void GpuProfCollect(Scheduler& scheduler) {
                 break;
             }
             const u64 h1 = k ^ (a.h2 << 1) ^ (static_cast<u64>(a.kind) << 60);
-            LOG_CRITICAL(Render_Vulkan, "GPUPROF-TOP: {} h1={:#x} h2={:#x} ms/frame={:.2f} n/frame={:.1f} avg_us={:.0f}",
-                         GpuProfKindName(a.kind), h1, a.h2, a.ns / 1e6 / fr, a.n / fr,
-                         a.n ? (a.ns / 1e3) / a.n : 0.0);
+            LOG_CRITICAL(
+                Render_Vulkan,
+                "GPUPROF-TOP: {} h1={:#x} h2={:#x} ms/frame={:.2f} n/frame={:.1f} avg_us={:.0f}",
+                GpuProfKindName(a.kind), h1, a.h2, a.ns / 1e6 / fr, a.n / fr,
+                a.n ? (a.ns / 1e3) / a.n : 0.0);
         }
         g.acc.clear();
         g.total_ns = 0;
@@ -1060,8 +1062,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                         vs_info.pgm_hash, ps_info.pgm_hash, regs.num_indices, is_indexed,
                         cb0.Address(), (u32)cb0.GetDataFmt(), (u32)bc0.enable,
                         (u32)bc0.color_src_factor, (u32)bc0.color_dst_factor,
-                        regs.depth_buffer.DepthAddress(),
-                        (u32)regs.depth_control.depth_enable);
+                        regs.depth_buffer.DepthAddress(), (u32)regs.depth_control.depth_enable);
         }
     }
     const auto cmdbuf = scheduler.CommandBuffer();
@@ -1107,11 +1108,12 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         LOG_WARNING(Render_Vulkan, "BLURDRAW: tick={} indices={}", scheduler.CurrentTick(),
                     regs.num_indices);
     }
-    const u32 gpuprof_q = GpuProfInit(instance)
-        ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(),
-                       pipeline->GetStage(Shader::LogicalStage::Vertex).pgm_hash,
-                       pipeline->GetStage(Shader::LogicalStage::Fragment).pgm_hash, 0)
-        : UINT32_MAX;
+    const u32 gpuprof_q =
+        GpuProfInit(instance)
+            ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(),
+                           pipeline->GetStage(Shader::LogicalStage::Vertex).pgm_hash,
+                           pipeline->GetStage(Shader::LogicalStage::Fragment).pgm_hash, 0)
+            : UINT32_MAX;
     if (is_indexed) {
         Parserprof::PhaseProbe p{Parserprof::PhDraw};
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
@@ -1218,11 +1220,12 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
                            pipeline->GetStage(Shader::LogicalStage::Fragment).pgm_hash;
         cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(marker));
     }
-    const u32 gpuprof_q = GpuProfInit(instance)
-        ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(),
-                       pipeline->GetStage(Shader::LogicalStage::Vertex).pgm_hash,
-                       pipeline->GetStage(Shader::LogicalStage::Fragment).pgm_hash, 1)
-        : UINT32_MAX;
+    const u32 gpuprof_q =
+        GpuProfInit(instance)
+            ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(),
+                           pipeline->GetStage(Shader::LogicalStage::Vertex).pgm_hash,
+                           pipeline->GetStage(Shader::LogicalStage::Fragment).pgm_hash, 1)
+            : UINT32_MAX;
     if (is_indexed) {
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
 
@@ -1234,7 +1237,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         }
         DebugState.IncDrawCall();
         ChunkHeavyFrame();
-    ChunkHeavyFrame();
+        ChunkHeavyFrame();
     } else {
         ASSERT(sizeof(VkDrawIndirectCommand) == stride);
 
@@ -1246,7 +1249,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         }
         DebugState.IncDrawCall();
         ChunkHeavyFrame();
-    ChunkHeavyFrame();
+        ChunkHeavyFrame();
     }
     GpuProfEnd(cmdbuf, gpuprof_q);
 
@@ -1334,7 +1337,8 @@ static bool SkipComputeShader(u64 hash) {
             static std::atomic<u32> s_skipped{0};
             const u32 n = ++s_skipped;
             if ((n % 500) == 1) {
-                LOG_CRITICAL(Render_Vulkan, "SKIPCS: skipped {} dispatches (last cs={:#x})", n, hash);
+                LOG_CRITICAL(Render_Vulkan, "SKIPCS: skipped {} dispatches (last cs={:#x})", n,
+                             hash);
             }
             return true;
         }
@@ -1448,14 +1452,16 @@ void Rasterizer::DispatchDirect() {
         }
         return;
     }
-    GpuProfPrepEnd(scheduler.CommandBuffer(), gpuprof_prep_q, scheduler.CurrentTick(), cs.pgm_hash, 4);
+    GpuProfPrepEnd(scheduler.CommandBuffer(), gpuprof_prep_q, scheduler.CurrentTick(), cs.pgm_hash,
+                   4);
 
     gpuprof_prep_q = prof ? GpuProfPrepBegin(scheduler.CommandBuffer()) : UINT32_MAX;
     {
         Parserprof::PhaseProbe p{Parserprof::PhSched};
         scheduler.EndRendering();
     }
-    GpuProfPrepEnd(scheduler.CommandBuffer(), gpuprof_prep_q, scheduler.CurrentTick(), cs.pgm_hash, 5);
+    GpuProfPrepEnd(scheduler.CommandBuffer(), gpuprof_prep_q, scheduler.CurrentTick(), cs.pgm_hash,
+                   5);
     gpuprof_prep_q = prof ? GpuProfPrepBegin(scheduler.CommandBuffer()) : UINT32_MAX;
     // [CSBARRIER] SHADPS4_CSBARRIER=lax: a buffer barrier between two compute dispatches is a
     // compute-pipe drain (~25 us each on RTX 5080; the ND job workers take 107-196 of them per
@@ -1466,9 +1472,13 @@ void Rasterizer::DispatchDirect() {
     // regardless (the game sends ACQUIRE_MEM before every worker dispatch - liveloop105 kept all)
     static const int cs_barrier_mode = [] {
         const char* e = std::getenv("SHADPS4_CSBARRIER");
-        const int v = !e ? 0 : std::string_view{e} == "lax" ? 1 : std::string_view{e} == "drop" ? 2 : 0;
+        const int v = !e                              ? 0
+                      : std::string_view{e} == "lax"  ? 1
+                      : std::string_view{e} == "drop" ? 2
+                                                      : 0;
         if (v) {
-            LOG_CRITICAL(Render_Vulkan, "CSBARRIER: mode {} - compute->compute buffer barriers dropped{}",
+            LOG_CRITICAL(Render_Vulkan,
+                         "CSBARRIER: mode {} - compute->compute buffer barriers dropped{}",
                          v == 1 ? "lax" : "drop", v == 1 ? " unless ACQUIRE_MEM asked" : " always");
         }
         return v;
@@ -1495,12 +1505,16 @@ void Rasterizer::DispatchDirect() {
             }
             if (shown < 6 && cs.pgm_hash == 0x8f067540ull) {
                 for (const auto& b : buffer_barriers) {
-                    if (shown++ >= 6) break;
+                    if (shown++ >= 6)
+                        break;
                     LOG_CRITICAL(Render_Vulkan,
-                                 "CSBARRIER-SAMPLE: pgm={:#x} src_stage={:#x} src_access={:#x} dst_stage={:#x} "
+                                 "CSBARRIER-SAMPLE: pgm={:#x} src_stage={:#x} src_access={:#x} "
+                                 "dst_stage={:#x} "
                                  "dst_access={:#x} size={:#x}",
-                                 cs.pgm_hash, static_cast<u64>(b.srcStageMask), static_cast<u64>(b.srcAccessMask),
-                                 static_cast<u64>(b.dstStageMask), static_cast<u64>(b.dstAccessMask), b.size);
+                                 cs.pgm_hash, static_cast<u64>(b.srcStageMask),
+                                 static_cast<u64>(b.srcAccessMask),
+                                 static_cast<u64>(b.dstStageMask),
+                                 static_cast<u64>(b.dstAccessMask), b.size);
                 }
             }
             // v2 (08.09): the buffer cache emits its hazard barriers as ALL_COMMANDS ->
@@ -1540,15 +1554,17 @@ void Rasterizer::DispatchDirect() {
                              static_cast<u64>(b.dstAccessMask), b.size);
             }
             const auto before = buffer_barriers.size();
-            buffer_barriers.erase(std::remove_if(buffer_barriers.begin(), buffer_barriers.end(), is_droppable),
-                                  buffer_barriers.end());
+            buffer_barriers.erase(
+                std::remove_if(buffer_barriers.begin(), buffer_barriers.end(), is_droppable),
+                buffer_barriers.end());
             dropped_total += before - buffer_barriers.size();
             kept_total += buffer_barriers.size();
         }
         const auto now = std::chrono::steady_clock::now();
         if (now >= next) {
             next = now + std::chrono::seconds(10);
-            LOG_CRITICAL(Render_Vulkan, "CSBARRIER: dropped={} kept={} acquire_syncs={} (cumulative)",
+            LOG_CRITICAL(Render_Vulkan,
+                         "CSBARRIER: dropped={} kept={} acquire_syncs={} (cumulative)",
                          dropped_total, kept_total, sync_total);
         }
     }
@@ -1604,9 +1620,11 @@ void Rasterizer::DispatchDirect() {
     }
     GpuProfPrepEnd(cmdbuf, gpuprof_prep_q, scheduler.CurrentTick(), cs.pgm_hash, 6);
     const u32 gpuprof_q = GpuProfInit(instance)
-        ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(), cs.pgm_hash,
-                       (u64(cs_program.dim_x) << 40) | (u64(cs_program.dim_y) << 20) | cs_program.dim_z, 2)
-        : UINT32_MAX;
+                              ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(), cs.pgm_hash,
+                                             (u64(cs_program.dim_x) << 40) |
+                                                 (u64(cs_program.dim_y) << 20) | cs_program.dim_z,
+                                             2)
+                              : UINT32_MAX;
     // [CSSPLIT] 1 when off or declined; K of the permutation GetComputePipeline() just selected,
     // so the LocalSize baked into the bound module and this grid were compiled together. The
     // profiler brackets and RecordDispatch above keep the guest dims.
@@ -2011,9 +2029,11 @@ bool Rasterizer::SkinBatchAppend(const Shader::Info& cs, const AmdGpu::ComputePr
                      "[CSBATCH] job#{} blk={:#x} cnt@{:#x}={} grid={} n={} out={:#x}+{:#x} "
                      "hdr={:#x} infl={:#x}+{:#x} pal={:#x}+{:#x} pos={:#x} nrm={:#x} tan={:#x} "
                      "out_home={} src_ud={}/{}/{}",
-                     jid, blk, cnt_addr, count, p.dim_x, n, out.base, out.size, hdr.base,
-                     infl.base, infl.size, pal.base, pal.size, pos.base, nrm.base, tan.base,
-                     out_owner->is_backing_backed ? 3 : out_owner->is_import_backed ? 2 : 1,
+                     jid, blk, cnt_addr, count, p.dim_x, n, out.base, out.size, hdr.base, infl.base,
+                     infl.size, pal.base, pal.size, pos.base, nrm.base, tan.base,
+                     out_owner->is_backing_backed  ? 3
+                     : out_owner->is_import_backed ? 2
+                                                   : 1,
                      cs.buffers[0].sharp_idx, cs.buffers[1].sharp_idx, cs.buffers[2].sharp_idx);
     }
     if (SkinBatch::FlushEvery() != 0 && sb.jobs.size() >= SkinBatch::FlushEvery()) {
@@ -2024,8 +2044,8 @@ bool Rasterizer::SkinBatchAppend(const Shader::Info& cs, const AmdGpu::ComputePr
 
 void Rasterizer::RecordSkinDispatch(std::span<const SkinJobGpu> jobs,
                                     std::span<const u32> group_map,
-                                    std::span<const vk::BufferMemoryBarrier2> barriers,
-                                    bool prebar, bool postbar, SkinBatch::Reason why) {
+                                    std::span<const vk::BufferMemoryBarrier2> barriers, bool prebar,
+                                    bool postbar, SkinBatch::Reason why) {
     auto& sb = skin_batch;
     // (a) table + map into the private ring: [SkinTableHdr][jobs n x 88 B] then, at the next
     //     StorageMinAlignment, [group_map n_groups x 4 B]. allow_wait=false: a wait would be
@@ -2055,7 +2075,7 @@ void Rasterizer::RecordSkinDispatch(std::span<const SkinJobGpu> jobs,
     u32 q = prof ? GpuProfPrepBegin(cmdbuf) : UINT32_MAX;
     vk::Buffer table = sb.ring->Handle();
     boost::container::small_vector<vk::BufferMemoryBarrier2, 34> bufbars(barriers.begin(),
-                                                                          barriers.end());
+                                                                         barriers.end());
     if (sb.vram_table) {
         // [TABLE_VRAM] staging copy into DEVICE_LOCAL at the same offsets: one ranged barrier
         // against the previous batch's reads of the region (WAR), one for the copy's
@@ -2222,10 +2242,10 @@ void Rasterizer::FlushSkinBatch(SkinBatch::Reason why) {
             sb.barriers.push_back(*b);
         }
     }
-    RecordSkinDispatch(sb.jobs, sb.group_map,
-                       std::span<const vk::BufferMemoryBarrier2>{sb.barriers.data(),
-                                                                 sb.barriers.size()},
-                       SkinBatch::PreBar(), SkinBatch::PostBar(), why);
+    RecordSkinDispatch(
+        sb.jobs, sb.group_map,
+        std::span<const vk::BufferMemoryBarrier2>{sb.barriers.data(), sb.barriers.size()},
+        SkinBatch::PreBar(), SkinBatch::PostBar(), why);
     if (scheduler.CurrentTick() != sb.first_tick) {
         ++sb.st.tick_splits;
     }
@@ -2539,10 +2559,11 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
         cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(
             pipeline->GetStage(Shader::LogicalStage::Compute).pgm_hash));
     }
-    const u32 gpuprof_q = GpuProfInit(instance)
-        ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(),
-                       pipeline->GetStage(Shader::LogicalStage::Compute).pgm_hash, 0, 3)
-        : UINT32_MAX;
+    const u32 gpuprof_q =
+        GpuProfInit(instance)
+            ? GpuProfBegin(cmdbuf, scheduler.CurrentTick(),
+                           pipeline->GetStage(Shader::LogicalStage::Compute).pgm_hash, 0, 3)
+            : UINT32_MAX;
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
     if (pipeline_cache.ComputeSplitListed()) {
         // [CSSPLIT] a listed shader that reaches the rasterizer through indirect args (real PM4
@@ -2728,8 +2749,7 @@ void Rasterizer::SyncDmaZones() {
         }
         Common::RecursiveSharedLock lock{mapped_ranges_mutex};
         for (auto& range : mapped_ranges) {
-            buffer_cache.SynchronizeBuffersInRange(range.lower(),
-                                                   range.upper() - range.lower());
+            buffer_cache.SynchronizeBuffersInRange(range.lower(), range.upper() - range.lower());
         }
     } else if (!dma_zone.empty()) {
         static u64 zone_syncs = 0;
@@ -2970,7 +2990,8 @@ void ListCountSample(VideoCore::BufferCache& buffer_cache, const Shader::Info& s
     // A protected (GPU-owned) page answers "not readable" instead of taking the fault path,
     // which would readback as a side effect of a diagnostic.
     const u32 readable = buffer_cache.PeekGuestDword(addr, &count, &home);
-    const u32 pos = g_listcount_pos.fetch_add(1, std::memory_order_relaxed) % g_listcount_ring.size();
+    const u32 pos =
+        g_listcount_pos.fetch_add(1, std::memory_order_relaxed) % g_listcount_ring.size();
     g_listcount_ring[pos] = ListCountEntry{tick, base, count, home, readable};
     const u32 total = g_listcount_total.fetch_add(1, std::memory_order_relaxed) + 1;
     // Loud on anything absurd, quiet otherwise (one line per 2000 binds as a heartbeat).
@@ -2990,11 +3011,14 @@ void DumpListCountRing() {
     }
     const u32 total = g_listcount_total.load(std::memory_order_relaxed);
     const u32 n = std::min<u32>(total, static_cast<u32>(g_listcount_ring.size()));
-    LOG_CRITICAL(Render_Vulkan, "LISTCOUNT-RING: {} binds total, last {} (oldest first):", total, n);
+    LOG_CRITICAL(Render_Vulkan, "LISTCOUNT-RING: {} binds total, last {} (oldest first):", total,
+                 n);
     const u32 end = g_listcount_pos.load(std::memory_order_relaxed);
     for (u32 i = 0; i < n; ++i) {
-        const auto& e = g_listcount_ring[(end + g_listcount_ring.size() - n + i) % g_listcount_ring.size()];
-        LOG_CRITICAL(Render_Vulkan, "LISTCOUNT-RING[{}]: tick={} base={:#x} count={} ({:#x}) home={} readable={}",
+        const auto& e =
+            g_listcount_ring[(end + g_listcount_ring.size() - n + i) % g_listcount_ring.size()];
+        LOG_CRITICAL(Render_Vulkan,
+                     "LISTCOUNT-RING[{}]: tick={} base={:#x} count={} ({:#x}) home={} readable={}",
                      i, e.tick, e.base, e.count, e.count, e.home, e.readable);
     }
 }
@@ -3057,12 +3081,13 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                     const u64 base = u64(d[w]) | (u64(d[w + 1] & 0xfffu) << 32);
                     const u32 stride = (d[w + 1] >> 16) & 0x3fffu;
                     const u32 records = d[w + 2];
-                    LOG_CRITICAL(Render_Vulkan,
-                                 "DESCDUMP #{} pgm={:#x} v#@{}: base={:#x} stride={} records={} "
-                                 "size={:#x} home={} home_end={}",
-                                 k, stage.pgm_hash, w, base, stride, records,
-                                 u64(records) * (stride ? stride : 1u), buffer_cache.PageHomeKind(base),
-                                 buffer_cache.PageHomeKind(base + u64(records) * (stride ? stride : 1u)));
+                    LOG_CRITICAL(
+                        Render_Vulkan,
+                        "DESCDUMP #{} pgm={:#x} v#@{}: base={:#x} stride={} records={} "
+                        "size={:#x} home={} home_end={}",
+                        k, stage.pgm_hash, w, base, stride, records,
+                        u64(records) * (stride ? stride : 1u), buffer_cache.PageHomeKind(base),
+                        buffer_cache.PageHomeKind(base + u64(records) * (stride ? stride : 1u)));
                 }
             }
         }
@@ -3070,7 +3095,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
     // [HOMEPOLICY] name the binder in CreateBuffer's union log (0 outside binds)
     VideoCore::g_bind_pgm_hash = stage.pgm_hash;
     struct BinderReset {
-        ~BinderReset() { VideoCore::g_bind_pgm_hash = 0; }
+        ~BinderReset() {
+            VideoCore::g_bind_pgm_hash = 0;
+        }
     } binder_reset;
     ListCountSample(buffer_cache, stage, scheduler.CurrentTick());
 
@@ -3099,8 +3126,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             LOG_WARNING(Render_Vulkan,
                         "SUS VSHARP: shader={:#x} base={:#x} num_records={:#x} stride={} "
                         "buffer_type={} storage={}",
-                        stage.pgm_hash, vsharp.base_address, vsharp.num_records,
-                        vsharp.GetStride(), (u32)desc.buffer_type, desc.IsStorage(vsharp));
+                        stage.pgm_hash, vsharp.base_address, vsharp.num_records, vsharp.GetStride(),
+                        (u32)desc.buffer_type, desc.IsStorage(vsharp));
         }
         if (!desc.IsSpecial() && vsharp.base_address != 0 && vsharp.GetSize() > 0) {
             // [FRAMECHAIN] ClampRangeSize for the unbounded (>= 1 GiB) V#s only, to size
@@ -3111,8 +3138,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             if (fc_clamp) {
                 const s64 fc_c1 = Parserprof::NowNs();
                 Parserprof::g_fc_clamp_ns.fetch_add(
-                    fc_c1 > fc_c0 ? static_cast<u64>(fc_c1 - fc_c0) : 0,
-                    std::memory_order_relaxed);
+                    fc_c1 > fc_c0 ? static_cast<u64>(fc_c1 - fc_c0) : 0, std::memory_order_relaxed);
                 Parserprof::g_fc_clamp_n.fetch_add(1, std::memory_order_relaxed);
             }
             // ObtainBuffer takes the size as u32, so an unbounded descriptor spanning
@@ -3139,8 +3165,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                                     std::chrono::steady_clock::now() - t0)
                                     .count();
                 if (us > 3000) {
-                    LOG_WARNING(Render_Vulkan, "SLOWFIND: size={:#x} took {}us shader={:#x}",
-                                size, us, stage.pgm_hash);
+                    LOG_WARNING(Render_Vulkan, "SLOWFIND: size={:#x} took {}us shader={:#x}", size,
+                                us, stage.pgm_hash);
                 }
             }
             buffer_bindings.emplace_back(buffer_id, vsharp, size);
@@ -3210,8 +3236,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             // отравляет IsRegionGpuModified для всего heap и убивает stream
             // fast-path остальных буферов. Чтения шейдера остаются корректными:
             // dirty-страницы по-прежнему заливаются read-синком.
-            const bool unbounded_v =
-                vsharp.num_records == 0xffffffffu && size >= 0x40000000u;
+            const bool unbounded_v = vsharp.num_records == 0xffffffffu && size >= 0x40000000u;
             // Compute dispatches poll ND's job queues through these unbounded
             // descriptors, and the queue payload can live anywhere in the
             // range: the bounded 16 MiB sync window that keeps draw-time
@@ -3261,9 +3286,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             // guest memory. It changed nothing visually and cut gameplay survival
             // from ~6 minutes to ~2, so the descriptor stays unmarked.
             const auto [vk_buffer, offset] = buffer_cache.ObtainBuffer(
-                vsharp.base_address, size, desc.is_written && !unbounded_v,
-                desc.is_formatted, buffer_id,
-                unbounded_v && !full_sync_unbounded ? (16u << 20) : 0u);
+                vsharp.base_address, size, desc.is_written && !unbounded_v, desc.is_formatted,
+                buffer_id, unbounded_v && !full_sync_unbounded ? (16u << 20) : 0u);
             // [BUFDUMP] SHADPS4_BUFDUMP=<hex hash>[,...]: where do this shader's buffers live?
             // (stand diagnostic: import-backed = guest memory over PCIe, else VRAM)
             {
@@ -3284,18 +3308,20 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                     }
                     return out;
                 }();
-                if (!bd_wanted.empty() &&
-                    std::find(bd_wanted.begin(), bd_wanted.end(), stage.pgm_hash) != bd_wanted.end()) {
-                    static std::unordered_map<u64, u32> bd_logged; // per shader (parser thread only)
+                if (!bd_wanted.empty() && std::find(bd_wanted.begin(), bd_wanted.end(),
+                                                    stage.pgm_hash) != bd_wanted.end()) {
+                    static std::unordered_map<u64, u32>
+                        bd_logged; // per shader (parser thread only)
                     if (bd_logged[stage.pgm_hash]++ < 120) {
-                        LOG_CRITICAL(Render_Vulkan,
-                                     "BUFDUMP: pgm={:#x} slot={} base={:#x} size={:#x} written={} "
-                                     "unbounded={} import_backed={} backing_backed={} buf_cpu={:#x} "
-                                     "buf_size={:#x}",
-                                     stage.pgm_hash, i, static_cast<u64>(vsharp.base_address), size,
-                                     desc.is_written, unbounded_v, vk_buffer->is_import_backed,
-                                     vk_buffer->is_backing_backed, vk_buffer->CpuAddr(),
-                                     vk_buffer->SizeBytes());
+                        LOG_CRITICAL(
+                            Render_Vulkan,
+                            "BUFDUMP: pgm={:#x} slot={} base={:#x} size={:#x} written={} "
+                            "unbounded={} import_backed={} backing_backed={} buf_cpu={:#x} "
+                            "buf_size={:#x}",
+                            stage.pgm_hash, i, static_cast<u64>(vsharp.base_address), size,
+                            desc.is_written, unbounded_v, vk_buffer->is_import_backed,
+                            vk_buffer->is_backing_backed, vk_buffer->CpuAddr(),
+                            vk_buffer->SizeBytes());
                     }
                 }
             }
@@ -3306,8 +3332,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                                            std::chrono::steady_clock::now() - to0)
                                            .count();
                     if (us_ob > 2000) {
-                        LOG_WARNING(Render_Vulkan,
-                                    "OBTPROF: size={:#x} written={} took {}us", size,
+                        LOG_WARNING(Render_Vulkan, "OBTPROF: size={:#x} written={} took {}us", size,
                                     desc.is_written, us_ob);
                     }
                 }
@@ -3358,19 +3383,19 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             static const bool precise_stages = [] {
                 const bool v = VideoCore::Buffer::PreciseStages();
                 if (v) {
-                    LOG_CRITICAL(Render_Vulkan, "PRECISE-STAGES: buffer barriers target the using stage");
+                    LOG_CRITICAL(Render_Vulkan,
+                                 "PRECISE-STAGES: buffer barriers target the using stage");
                 }
                 return v;
             }();
             const vk::PipelineStageFlagBits2 dst_stage =
-                !precise_stages ? vk::PipelineStageFlagBits2::eAllCommands
+                !precise_stages                         ? vk::PipelineStageFlagBits2::eAllCommands
                 : stage.stage == Shader::Stage::Compute ? vk::PipelineStageFlagBits2::eComputeShader
                                                         : vk::PipelineStageFlagBits2::eAllGraphics;
             const bool sd_store = sd_kind[i] == 2;
-            auto barrier =
-                vk_buffer->GetBarrier(desc.is_written ? vk::AccessFlagBits2::eShaderWrite
-                                                      : vk::AccessFlagBits2::eShaderRead,
-                                      dst_stage);
+            auto barrier = vk_buffer->GetBarrier(desc.is_written ? vk::AccessFlagBits2::eShaderWrite
+                                                                 : vk::AccessFlagBits2::eShaderRead,
+                                                 dst_stage);
             if (barrier) {
                 buffer_barriers.emplace_back(*barrier);
             }

@@ -9,6 +9,7 @@
 #include <csignal>
 #include <pthread.h>
 #endif
+#include "common/postmortem.h"
 #include "core/debug_state.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
@@ -18,7 +19,6 @@
 #include "core/libraries/kernel/threads/thread_state.h"
 #include "core/libraries/libs.h"
 #include "core/memory.h"
-#include "common/postmortem.h"
 
 #if defined(ARCH_X86_64) || defined(__arm64__) || defined(__aarch64__)
 extern "C" void* PS4_SYSV_ABI _runOnAnotherStack(void* arg, void* func,

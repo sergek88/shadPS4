@@ -1,15 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <chrono>
-#include "common/postmortem.h"
-#include <cstdlib>
-#include "common/logging/log.h"
-#include "common/thread.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include "common/assert.h"
+#include "common/logging/log.h"
+#include "common/postmortem.h"
+#include "common/thread.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/kernel/threads/pthread.h"
@@ -205,8 +204,8 @@ int PS4_SYSV_ABI posix_pthread_cond_wait(PthreadCondT* cond, PthreadMutexT* mute
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
     static const bool s_tcw = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
-    const auto tcw0 = s_tcw ? std::chrono::steady_clock::now()
-                            : std::chrono::steady_clock::time_point{};
+    const auto tcw0 =
+        s_tcw ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Postmortem::GuestWaitScope wait_scope{"pthread_cond_wait", reinterpret_cast<u64>(cond),
                                           reinterpret_cast<u64>(mutex)};
     const int cw_ret = cvp->Wait(mutex, nullptr);
@@ -216,8 +215,7 @@ int PS4_SYSV_ABI posix_pthread_cond_wait(PthreadCondT* cond, PthreadMutexT* mute
                             .count();
         if (ms > 300) {
             LOG_WARNING(Kernel_Event, "TRACEWAIT cond: '{}' {}ms cv={:#x}",
-                        Common::GetCurrentThreadName(), ms,
-                        reinterpret_cast<u64>(cond));
+                        Common::GetCurrentThreadName(), ms, reinterpret_cast<u64>(cond));
         }
     }
     return cw_ret;
@@ -233,8 +231,8 @@ int PS4_SYSV_ABI posix_pthread_cond_timedwait(PthreadCondT* cond, PthreadMutexT*
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
     static const bool s_tcw = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
-    const auto tcw0 = s_tcw ? std::chrono::steady_clock::now()
-                            : std::chrono::steady_clock::time_point{};
+    const auto tcw0 =
+        s_tcw ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Postmortem::GuestWaitScope wait_scope{"pthread_cond_timedwait", reinterpret_cast<u64>(cond),
                                           static_cast<u64>(abstime->tv_sec)};
     const int cw_ret = cvp->Wait(mutex, abstime);
@@ -244,8 +242,7 @@ int PS4_SYSV_ABI posix_pthread_cond_timedwait(PthreadCondT* cond, PthreadMutexT*
                             .count();
         if (ms > 300) {
             LOG_WARNING(Kernel_Event, "TRACEWAIT cond: '{}' {}ms cv={:#x}",
-                        Common::GetCurrentThreadName(), ms,
-                        reinterpret_cast<u64>(cond));
+                        Common::GetCurrentThreadName(), ms, reinterpret_cast<u64>(cond));
         }
     }
     return cw_ret;
@@ -258,8 +255,8 @@ int PS4_SYSV_ABI posix_pthread_cond_reltimedwait_np(PthreadCondT* cond, PthreadM
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
     static const bool s_tcw = std::getenv("SHADPS4_TRACEWAIT") != nullptr;
-    const auto tcw0 = s_tcw ? std::chrono::steady_clock::now()
-                            : std::chrono::steady_clock::time_point{};
+    const auto tcw0 =
+        s_tcw ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const int cw_ret = cvp->Wait(mutex, THR_RELTIME, usec);
     if (s_tcw) {
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -267,8 +264,7 @@ int PS4_SYSV_ABI posix_pthread_cond_reltimedwait_np(PthreadCondT* cond, PthreadM
                             .count();
         if (ms > 300) {
             LOG_WARNING(Kernel_Event, "TRACEWAIT cond: '{}' {}ms cv={:#x}",
-                        Common::GetCurrentThreadName(), ms,
-                        reinterpret_cast<u64>(cond));
+                        Common::GetCurrentThreadName(), ms, reinterpret_cast<u64>(cond));
         }
     }
     return cw_ret;

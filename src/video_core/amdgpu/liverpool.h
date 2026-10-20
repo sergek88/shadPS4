@@ -4,8 +4,6 @@
 #pragma once
 
 #include <condition_variable>
-#include "common/logging/log.h"
-#include "common/postmortem.h"
 #include <coroutine>
 #include <exception>
 #include <mutex>
@@ -14,12 +12,14 @@
 #include <thread>
 #include <vector>
 #include <queue>
+#include "common/logging/log.h"
+#include "common/postmortem.h"
 
+#include <functional>
 #include "common/assert.h"
 #include "common/slot_vector.h"
 #include "common/types.h"
 #include "common/unique_function.h"
-#include <functional>
 #include "video_core/amdgpu/cb_db_extent.h"
 #include "video_core/amdgpu/regs.h"
 
@@ -34,7 +34,6 @@ struct VideoOutPort;
 namespace AmdGpu {
 
 extern std::atomic<u64> g_flips_materialized;
-
 
 struct Liverpool {
     static constexpr u32 GfxQueueId = 0u;
@@ -160,9 +159,8 @@ public:
         using clock = std::chrono::steady_clock;
         // [GUESTWAIT] THE blocking point of sceGnmSubmitDone when SHADPS4_SUBDEPTH >= 0. It had
         // no marker, which is why the stall snapshot could only say "sceGnmSubmitDone".
-        Postmortem::GuestWaitScope wait_scope{
-            "WaitForFramePacing", requested_flips,
-            g_flips_materialized.load(std::memory_order_relaxed)};
+        Postmortem::GuestWaitScope wait_scope{"WaitForFramePacing", requested_flips,
+                                              g_flips_materialized.load(std::memory_order_relaxed)};
         u64 last_beat = gfx_parse_heartbeat.load(std::memory_order_relaxed);
         auto last_progress = clock::now();
         // [SUBFIX] SHADPS4_SUBFIX=1 (default OFF). Deadlock signature: the gfx ring is fully
@@ -234,10 +232,10 @@ public:
                     frozen_submits = now_submits;
                     frozen_since = clock::now();
                 }
-                const u64 frozen_ms = static_cast<u64>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() -
-                                                                          frozen_since)
-                        .count());
+                const u64 frozen_ms =
+                    static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         clock::now() - frozen_since)
+                                         .count());
                 if (now_submits == 0) {
                     if (drained_since == clock::time_point{}) {
                         drained_since = clock::now();
@@ -245,8 +243,8 @@ public:
                 } else {
                     drained_since = clock::time_point{};
                 }
-                const bool drained = drained_since != clock::time_point{} &&
-                                     clock::now() - drained_since > 250ms;
+                const bool drained =
+                    drained_since != clock::time_point{} && clock::now() - drained_since > 250ms;
                 const bool frozen = subfix >= 2 && frozen_ms >= subfix_ms;
                 if (drained || frozen) {
                     Postmortem::g_subfix_released.fetch_add(1, std::memory_order_relaxed);
@@ -260,11 +258,9 @@ public:
                                  std::chrono::duration_cast<std::chrono::milliseconds>(
                                      clock::now() - wait_started)
                                      .count(),
-                                 Postmortem::g_tick_last_write_ms.load(
-                                     std::memory_order_relaxed)
-                                     ? Postmortem::NowMs() -
-                                           Postmortem::g_tick_last_write_ms.load(
-                                               std::memory_order_relaxed)
+                                 Postmortem::g_tick_last_write_ms.load(std::memory_order_relaxed)
+                                     ? Postmortem::NowMs() - Postmortem::g_tick_last_write_ms.load(
+                                                                 std::memory_order_relaxed)
                                      : -1);
                     return;
                 }

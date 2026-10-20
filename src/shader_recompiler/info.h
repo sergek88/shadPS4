@@ -5,8 +5,8 @@
 
 #include <cstdlib>
 #include <span>
-#include <utility>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <boost/container/static_vector.hpp>
 #include "common/assert.h"

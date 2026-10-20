@@ -205,10 +205,10 @@ static vk::ShaderModule CompileImpl(std::string_view code, vk::ShaderStageFlagBi
     if (!shader->preprocess(&DefaultTBuiltInResource, default_version, profile, false, true,
                             messages, &preprocessedStr, includer)) [[unlikely]] {
         LOG_CRITICAL(Render_Vulkan,
-                  "Shader preprocess error\n"
-                  "Shader Info Log:\n"
-                  "{}\n{}",
-                  shader->getInfoLog(), shader->getInfoDebugLog());
+                     "Shader preprocess error\n"
+                     "Shader Info Log:\n"
+                     "{}\n{}",
+                     shader->getInfoLog(), shader->getInfoDebugLog());
         LOG_CRITICAL(Render_Vulkan, "Shader Source:\n{}", code);
         return {};
     }
@@ -216,10 +216,10 @@ static vk::ShaderModule CompileImpl(std::string_view code, vk::ShaderStageFlagBi
     if (!shader->parse(&DefaultTBuiltInResource, default_version, profile, false, true, messages,
                        includer)) [[unlikely]] {
         LOG_CRITICAL(Render_Vulkan,
-                  "Shader parse error\n"
-                  "Shader Info Log:\n"
-                  "{}\n{}",
-                  shader->getInfoLog(), shader->getInfoDebugLog());
+                     "Shader parse error\n"
+                     "Shader Info Log:\n"
+                     "{}\n{}",
+                     shader->getInfoLog(), shader->getInfoDebugLog());
         LOG_CRITICAL(Render_Vulkan, "Shader Source:\n{}", code);
         return {};
     }
@@ -229,10 +229,10 @@ static vk::ShaderModule CompileImpl(std::string_view code, vk::ShaderStageFlagBi
     program->addShader(shader.get());
     if (!program->link(messages)) {
         LOG_CRITICAL(Render_Vulkan,
-                  "Shader link error\n"
-                  "Program Info Log:\n"
-                  "{}\n{}",
-                  program->getInfoLog(), program->getInfoDebugLog());
+                     "Shader link error\n"
+                     "Program Info Log:\n"
+                     "{}\n{}",
+                     program->getInfoLog(), program->getInfoDebugLog());
         return {};
     }
 

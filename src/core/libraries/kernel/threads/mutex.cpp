@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <thread>
-#include "common/postmortem.h"
 #include "common/arch.h"
 #include "common/assert.h"
+#include "common/postmortem.h"
 #include "common/types.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/posix_error.h"

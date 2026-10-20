@@ -563,7 +563,7 @@ message NotifyRoomMessage {
     bytes msg = 10;
 }
 
-// Title User Storage (TUS) 
+// Title User Storage (TUS)
 
 message TusVariable {
     string ownerNpId                  = 1;

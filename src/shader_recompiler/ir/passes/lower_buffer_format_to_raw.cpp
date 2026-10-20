@@ -126,10 +126,10 @@ static bool StoreBufferFormat(IR::IREmitter& ir, const IR::Value handle, const I
             // [SKINDIRECT-STORES] the hash names the shader: for a listed one this line must only
             // ever appear next to a SPECMISS (empty job slot), never grow in the fight. Appended,
             // so the existing "FMT0 #N: typed store" greps keep matching.
-            LOG_CRITICAL(Render_Recompiler,
-                         "FMT0 #{}: typed store with data_format={} components={} dropped (shader {:#x})",
-                         k, static_cast<u32>(format_info.data_format), format_info.num_components,
-                         pgm_hash);
+            LOG_CRITICAL(
+                Render_Recompiler,
+                "FMT0 #{}: typed store with data_format={} components={} dropped (shader {:#x})", k,
+                static_cast<u32>(format_info.data_format), format_info.num_components, pgm_hash);
         }
         return false;
     }
@@ -250,7 +250,7 @@ static void LowerBufferFormatInst(IR::Block& block, IR::Inst& inst, Info& info) 
         // inside ignores sharps the resource tracking pass did not convert.
         if (desc.is_written && VideoCore::BufferCache::SkinDirectWanted(info.pgm_hash)) {
             VideoCore::BufferCache::SkinDirectNoteStoreLowered(info.pgm_hash, desc.sharp_idx,
-                                                                emitted);
+                                                               emitted);
         }
     }
 }

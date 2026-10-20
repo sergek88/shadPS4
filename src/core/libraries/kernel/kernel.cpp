@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <thread>
-#include "common/postmortem.h"
 #include <boost/asio/io_context.hpp>
+#include "common/postmortem.h"
 
 #include "common/assert.h"
 #include "common/debug.h"

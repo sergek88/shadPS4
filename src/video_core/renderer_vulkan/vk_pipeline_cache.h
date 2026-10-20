@@ -149,7 +149,7 @@ private:
     u8 cssplit_listed_log2{}; // [CSSPLIT] SHADPS4_CSSPLIT entry for the current CS hash (0 = none)
     u8 cssplit_ask_log2{};    // [CSSPLIT] what this dispatch may use (0 for indirect / 2-D / 3-D)
     u8 cssplit_eff_log2{};    // [CSSPLIT] what the selected permutation applies
-    u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
+    u32 num_new_pipelines{};  // new pipelines added to the cache since the game start
 
     // Only if Config::collectShadersForDebug()
     tsl::robin_map<vk::ShaderModule,

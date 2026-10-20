@@ -2,25 +2,25 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
-#include "common/arch.h"
 #include <cstring>
+#include "common/arch.h"
 #include "common/assert.h"
 #include "common/decoder.h"
+#include "common/memory_patcher.h"
 #include "common/postmortem.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/threads/exception.h"
-#include "common/memory_patcher.h"
 #include "core/signals.h"
 #include "emulator.h"
 
 #ifdef _WIN32
-#include <windows.h>
-#include <dbghelp.h>
-#include <tlhelp32.h>
 #include <chrono>
 #include <thread>
+#include <dbghelp.h>
+#include <tlhelp32.h>
+#include <windows.h>
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 #else
 #include <csignal>
@@ -62,9 +62,9 @@ void ArmWriteWatch(u64 address) {
             if (te.th32OwnerProcessID != pid || te.th32ThreadID == GetCurrentThreadId()) {
                 continue;
             }
-            const HANDLE th = OpenThread(THREAD_SET_CONTEXT | THREAD_GET_CONTEXT |
-                                             THREAD_SUSPEND_RESUME,
-                                         FALSE, te.th32ThreadID);
+            const HANDLE th =
+                OpenThread(THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE,
+                           te.th32ThreadID);
             if (th == nullptr) {
                 continue;
             }
@@ -74,8 +74,8 @@ void ArmWriteWatch(u64 address) {
             if (GetThreadContext(th, &ctx)) {
                 ctx.Dr0 = address;
                 // local enable for slot 0, break on write, 4-byte length
-                ctx.Dr7 = (ctx.Dr7 & ~u64{0xF0003}) | u64{1} | (u64{0b01} << 16) |
-                          (u64{0b11} << 18);
+                ctx.Dr7 =
+                    (ctx.Dr7 & ~u64{0xF0003}) | u64{1} | (u64{0b01} << 16) | (u64{0b11} << 18);
                 ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
                 if (SetThreadContext(th, &ctx)) {
                     ++armed;
@@ -89,7 +89,6 @@ void ArmWriteWatch(u64 address) {
     LOG_CRITICAL(Debug, "WATCHARM: hardware write watch on {:#x}, {} threads armed", address,
                  armed);
 }
-
 
 // [CRASHSTAT] Census of the SKIPNULLCALL crutch: how often it fired and where it returned to.
 static std::atomic<u32> g_skipnull_count{0};
@@ -200,13 +199,11 @@ static void AppendCrashStat(EXCEPTION_POINTERS* pExp) {
             if (nm == nullptr || n >= static_cast<int>(sizeof(rw)) - 72) {
                 continue;
             }
-            n += std::snprintf(rw + n, sizeof(rw) - n, " %s(a0=%#llx,a1=%#llx)@%lldms_ago", nm,
-                               static_cast<unsigned long long>(
-                                   r.a0.load(std::memory_order_relaxed)),
-                               static_cast<unsigned long long>(
-                                   r.a1.load(std::memory_order_relaxed)),
-                               static_cast<long long>(now_ms -
-                                                      r.ms.load(std::memory_order_relaxed)));
+            n += std::snprintf(
+                rw + n, sizeof(rw) - n, " %s(a0=%#llx,a1=%#llx)@%lldms_ago", nm,
+                static_cast<unsigned long long>(r.a0.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(r.a1.load(std::memory_order_relaxed)),
+                static_cast<long long>(now_ms - r.ms.load(std::memory_order_relaxed)));
         }
         std::snprintf(rw + n, sizeof(rw) - n, "\r\n");
         const HANDLE rf = CreateFileA("C:\\Users\\user\\crashes.log", FILE_APPEND_DATA,
@@ -248,10 +245,9 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                 ? static_cast<unsigned long long>(rec->ExceptionInformation[1])
                 : 0ull,
             GetCurrentThreadId());
-        const HANDLE f =
-            CreateFileA("C:\\Users\\user\\shad_nested_fault.txt", FILE_APPEND_DATA,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        const HANDLE f = CreateFileA("C:\\Users\\user\\shad_nested_fault.txt", FILE_APPEND_DATA,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL, nullptr);
         if (f != INVALID_HANDLE_VALUE) {
             DWORD written = 0;
             WriteFile(f, msg, len > 0 ? static_cast<DWORD>(len) : 0, &written, nullptr);
@@ -373,10 +369,9 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
             ++hits;
             // After the first dozen samples, keep only ZERO-writes: the hunt is
             // for whoever clears the frame tick right before the guest assert.
-            const u64 watched_now =
-                g_armed_watch_address != 0
-                    ? *reinterpret_cast<volatile u64*>(g_armed_watch_address)
-                    : ~0ull;
+            const u64 watched_now = g_armed_watch_address != 0
+                                        ? *reinterpret_cast<volatile u64*>(g_armed_watch_address)
+                                        : ~0ull;
             // [postmortem] Unconditional (before any throttling/caps): a non-zero store
             // to the watched tick slot identifies the tick-writer thread; a zero store
             // is the legitimate FrameBegin cleaner - record the time, never the TID.
@@ -404,9 +399,8 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                     u8 code[96]{};
                     SIZE_T got = 0;
                     const DWORD64 from = rip - 64;
-                    if (ReadProcessMemory(GetCurrentProcess(),
-                                          reinterpret_cast<LPCVOID>(from), code, sizeof(code),
-                                          &got) &&
+                    if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(from),
+                                          code, sizeof(code), &got) &&
                         got > 0) {
                         std::string hex;
                         for (SIZE_T b = 0; b < got; ++b) {
@@ -467,8 +461,9 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                 g_skipnull_ret[(n - 1) & 3].store(ret_addr, std::memory_order_relaxed);
                 g_skipnull_last_ms.store(Postmortem::NowMs(), std::memory_order_relaxed);
                 if (n <= 5 || n % 100 == 0) {
-                    LOG_WARNING(Debug, "SKIPNULL #{}: stepping over empty handler, resuming at {:#x}",
-                                n, ret_addr);
+                    LOG_WARNING(Debug,
+                                "SKIPNULL #{}: stepping over empty handler, resuming at {:#x}", n,
+                                ret_addr);
                 }
                 pExp->ContextRecord->Rip = ret_addr;
                 pExp->ContextRecord->Rsp += 8;
@@ -518,8 +513,8 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                     u8 bytes[160]{};
                     len = std::min<u32>(len, sizeof(bytes));
                     SIZE_T got = 0;
-                    if (!ReadProcessMemory(GetCurrentProcess(),
-                                           reinterpret_cast<LPCVOID>(at), bytes, len, &got) ||
+                    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(at),
+                                           bytes, len, &got) ||
                         got == 0) {
                         LOG_CRITICAL(Debug, "CRASHDUMP {} @ {:#x}: unreadable", tag, at);
                         return;
@@ -557,14 +552,12 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                     c.Rip == MemoryPatcher::g_eboot_address + 0x5683be) {
                     u32 edx_arg = 0;
                     SIZE_T got_edx = 0;
-                    ReadProcessMemory(GetCurrentProcess(),
-                                      reinterpret_cast<LPCVOID>(c.Rbp - 0x64), &edx_arg,
-                                      sizeof(edx_arg), &got_edx);
+                    ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(c.Rbp - 0x64),
+                                      &edx_arg, sizeof(edx_arg), &got_edx);
                     float xf[8]{};
                     SIZE_T got_xf = 0;
-                    ReadProcessMemory(GetCurrentProcess(),
-                                      reinterpret_cast<LPCVOID>(c.Rbp - 0x50), xf, sizeof(xf),
-                                      &got_xf);
+                    ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(c.Rbp - 0x50),
+                                      xf, sizeof(xf), &got_xf);
                     LOG_CRITICAL(Debug,
                                  "XFORM: obj(r14)={:#x} a1(r12)={:#x} a2(edx)={:#x} a3(r13)={:#x} "
                                  "rbx={:#x} rbp={:#x} | pos=({}, {}, {}, {}) rot=({}, {}, {}, {})",
@@ -658,19 +651,19 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                 // [PAIRS] eboot+0x5fa3d5 (`cmp r12, [rbp]`): the crashing worker walks a list of
                 // 16-byte entries at r10 (rbx = current entry, stride 0x10), each holding a pointer
                 // to an object with a u16 at +0xa, and compares against the key object r12. In the
-                // 05.09 postmortem rbp held 0x3f6607a9be743e01 - two floats (~0.898, ~-0.238) where a
-                // pointer belongs, i.e. the list was overwritten with vertex-like data after the pier
-                // cutscene. Dump the list around the bad entry so the extent of the overwrite and the
-                // data that landed there are named, not guessed.
+                // 05.09 postmortem rbp held 0x3f6607a9be743e01 - two floats (~0.898, ~-0.238) where
+                // a pointer belongs, i.e. the list was overwritten with vertex-like data after the
+                // pier cutscene. Dump the list around the bad entry so the extent of the overwrite
+                // and the data that landed there are named, not guessed.
                 if (MemoryPatcher::g_eboot_address != 0 &&
                     c.Rip == MemoryPatcher::g_eboot_address + 0x5fa3d5) {
                     VideoCore::g_crash_addr_hint.store(c.Rbx, std::memory_order_relaxed);
                     const float* fp = reinterpret_cast<const float*>(&c.Rbp);
-                    LOG_CRITICAL(Debug,
-                                 "PAIRS: entry(rbx)={:#x} base(r10)={:#x} bad(rbp)={:#x} as_floats=({}, {}) "
-                                 "key(r12)={:#x} obj(rdi)={:#x} prev(rcx)={:#x} idx(rdx)={} r15={:#x}",
-                                 c.Rbx, c.R10, c.Rbp, fp[0], fp[1], c.R12, c.Rdi, c.Rcx, c.Rdx,
-                                 c.R15);
+                    LOG_CRITICAL(
+                        Debug,
+                        "PAIRS: entry(rbx)={:#x} base(r10)={:#x} bad(rbp)={:#x} as_floats=({}, {}) "
+                        "key(r12)={:#x} obj(rdi)={:#x} prev(rcx)={:#x} idx(rdx)={} r15={:#x}",
+                        c.Rbx, c.R10, c.Rbp, fp[0], fp[1], c.R12, c.Rdi, c.Rcx, c.Rdx, c.R15);
                     dump("pairs-rbx-40", c.Rbx >= 0x40 ? c.Rbx - 0x40 : 0, 160);
                     dump("pairs-rbx+a0", c.Rbx + 0xa0, 160);
                     dump("pairs-r10", c.R10, 160);
@@ -687,9 +680,9 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                                           words, sizeof(words), &got_w)) {
                         for (size_t wi = 0; wi < got_w / 8 && bn < 600; ++wi) {
                             if (words[wi] >= eb && words[wi] < eb + 0x1400000) {
-                                bn += std::snprintf(bt + bn, sizeof(bt) - bn, " [+%zx]eboot+%#llx",
-                                                    wi * 8,
-                                                    static_cast<unsigned long long>(words[wi] - eb));
+                                bn += std::snprintf(
+                                    bt + bn, sizeof(bt) - bn, " [+%zx]eboot+%#llx", wi * 8,
+                                    static_cast<unsigned long long>(words[wi] - eb));
                             }
                         }
                     }
@@ -704,30 +697,26 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                     const auto pm_age = [pm_now](s64 v) { return v ? pm_now - v : s64{-1}; };
                     const s64 pm_inflight =
                         Postmortem::g_tw_inflight_since_ms.load(std::memory_order_relaxed);
-                    LOG_CRITICAL(Debug,
-                                 "POSTMORTEM: crash_tid={} tw_tid={} tick_write_age_ms={} "
-                                 "tick_zero_age_ms={} eop_signal_age_ms={} "
-                                 "eop_dispatch_age_ms={} eop_lock_max_us={} eop_lock_sum_us={} "
-                                 "eop_gap_max_ms={} "
-                                 "tw_av n={} sum_us={} max_us={} inflight_ms={}",
-                                 GetCurrentThreadId(),
-                                 Postmortem::g_tick_writer_tid.load(std::memory_order_relaxed),
-                                 pm_age(Postmortem::g_tick_last_write_ms.load(
-                                     std::memory_order_relaxed)),
-                                 pm_age(Postmortem::g_tick_last_zero_ms.load(
-                                     std::memory_order_relaxed)),
-                                 pm_age(Postmortem::g_eop_signal_ms.load(
-                                     std::memory_order_relaxed)),
-                                 pm_age(Postmortem::g_eop_dispatch_ms.load(
-                                     std::memory_order_relaxed)),
-                                 Postmortem::g_eop_lock_wait_max_us.load(
-                                     std::memory_order_relaxed),
-                                 Postmortem::g_eop_lock_wait_us.load(std::memory_order_relaxed),
-                                 Postmortem::g_eop_gap_max_ms.load(std::memory_order_relaxed),
-                                 Postmortem::g_tw_av_count.load(std::memory_order_relaxed),
-                                 Postmortem::g_tw_av_us.load(std::memory_order_relaxed),
-                                 Postmortem::g_tw_av_max_us.load(std::memory_order_relaxed),
-                                 pm_inflight ? pm_now - pm_inflight : 0);
+                    LOG_CRITICAL(
+                        Debug,
+                        "POSTMORTEM: crash_tid={} tw_tid={} tick_write_age_ms={} "
+                        "tick_zero_age_ms={} eop_signal_age_ms={} "
+                        "eop_dispatch_age_ms={} eop_lock_max_us={} eop_lock_sum_us={} "
+                        "eop_gap_max_ms={} "
+                        "tw_av n={} sum_us={} max_us={} inflight_ms={}",
+                        GetCurrentThreadId(),
+                        Postmortem::g_tick_writer_tid.load(std::memory_order_relaxed),
+                        pm_age(Postmortem::g_tick_last_write_ms.load(std::memory_order_relaxed)),
+                        pm_age(Postmortem::g_tick_last_zero_ms.load(std::memory_order_relaxed)),
+                        pm_age(Postmortem::g_eop_signal_ms.load(std::memory_order_relaxed)),
+                        pm_age(Postmortem::g_eop_dispatch_ms.load(std::memory_order_relaxed)),
+                        Postmortem::g_eop_lock_wait_max_us.load(std::memory_order_relaxed),
+                        Postmortem::g_eop_lock_wait_us.load(std::memory_order_relaxed),
+                        Postmortem::g_eop_gap_max_ms.load(std::memory_order_relaxed),
+                        Postmortem::g_tw_av_count.load(std::memory_order_relaxed),
+                        Postmortem::g_tw_av_us.load(std::memory_order_relaxed),
+                        Postmortem::g_tw_av_max_us.load(std::memory_order_relaxed),
+                        pm_inflight ? pm_now - pm_inflight : 0);
                     // [SLOWWAIT p.3] GFX parser state at death + last 8 packets + ASC liveness.
                     // Loads only; ring/asc strings built in fixed buffers (no allocations).
                     {
@@ -748,8 +737,7 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                             const u32 r_op = static_cast<u32>(packed >> 56);
                             const u64 r_seq = (packed >> 24) & 0xFFFFFFFFull;
                             const u64 r_ms = packed & 0xFFFFFFull;
-                            const u64 age =
-                                (static_cast<u64>(pm_now) - r_ms) & 0xFFFFFFull;
+                            const u64 age = (static_cast<u64>(pm_now) - r_ms) & 0xFFFFFFull;
                             if (rb < static_cast<int>(sizeof(ring_buf)) - 40) {
                                 rb += std::snprintf(ring_buf + rb, sizeof(ring_buf) - rb,
                                                     " %#x#%llu@%llums", r_op,
@@ -823,19 +811,18 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
             // sometimes lands on zero and sometimes on junk, so treat both the same - the
             // giveaway is that the faulting address IS the instruction pointer.
             const bool jumped_into_nowhere =
-                ctx.Rip == 0 ||
-                (code == EXCEPTION_ACCESS_VIOLATION &&
-                 pExp->ExceptionRecord->NumberParameters >= 2 &&
-                 static_cast<u64>(pExp->ExceptionRecord->ExceptionInformation[1]) ==
-                     static_cast<u64>(ctx.Rip));
+                ctx.Rip == 0 || (code == EXCEPTION_ACCESS_VIOLATION &&
+                                 pExp->ExceptionRecord->NumberParameters >= 2 &&
+                                 static_cast<u64>(pExp->ExceptionRecord->ExceptionInformation[1]) ==
+                                     static_cast<u64>(ctx.Rip));
             if (jumped_into_nowhere) {
                 LOG_CRITICAL(Debug, "CRASHNULL: rip={:#x} rsp={:#x} rbp={:#x}", ctx.Rip, ctx.Rsp,
                              ctx.Rbp);
                 LOG_CRITICAL(Debug,
                              "CRASHREGS: rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} "
                              "rdi={:#x} r11={:#x} r12={:#x} r13={:#x} r15={:#x}",
-                             ctx.Rax, ctx.Rbx, ctx.Rcx, ctx.Rdx, ctx.Rsi, ctx.Rdi, ctx.R11,
-                             ctx.R12, ctx.R13, ctx.R15);
+                             ctx.Rax, ctx.Rbx, ctx.Rcx, ctx.Rdx, ctx.Rsi, ctx.Rdi, ctx.R11, ctx.R12,
+                             ctx.R13, ctx.R15);
                 // The faulting loop walks a table of {func, data} pairs at rbx with a
                 // 16-byte stride and a count at [r11+0x24]; dump it to see which slot is
                 // empty and what its neighbours are.
@@ -848,10 +835,9 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                         std::string dump;
                         for (u32 e = 0; e < count; ++e) {
                             DWORD64 pair[2]{};
-                            if (!ReadProcessMemory(process,
-                                                   reinterpret_cast<LPCVOID>(ctx.Rbx +
-                                                                             DWORD64{e} * 16),
-                                                   pair, sizeof(pair), &got) ||
+                            if (!ReadProcessMemory(
+                                    process, reinterpret_cast<LPCVOID>(ctx.Rbx + DWORD64{e} * 16),
+                                    pair, sizeof(pair), &got) ||
                                 got != sizeof(pair)) {
                                 break;
                             }
@@ -869,8 +855,9 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                             for (u32 off = 0; off < 0x1000; off += 8) {
                                 DWORD64 word = 0;
                                 SIZE_T rd = 0;
-                                if (ReadProcessMemory(process, reinterpret_cast<LPCVOID>(page + off),
-                                                      &word, sizeof(word), &rd) &&
+                                if (ReadProcessMemory(process,
+                                                      reinterpret_cast<LPCVOID>(page + off), &word,
+                                                      sizeof(word), &rd) &&
                                     rd == sizeof(word)) {
                                     ++sampled;
                                     if (word != 0) {
@@ -878,8 +865,8 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                                     }
                                 }
                             }
-                            LOG_CRITICAL(Debug, "CRASHPAGE: page={:#x} nonzero={}/{} words",
-                                         page, nonzero, sampled);
+                            LOG_CRITICAL(Debug, "CRASHPAGE: page={:#x} nonzero={}/{} words", page,
+                                         nonzero, sampled);
                             // Show the neighbourhood: a zeroed hole inside live data points
                             // at a cleared/never-published batch rather than lost memory.
                             std::string around;
@@ -928,10 +915,10 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                                     for (u32 t = 0; t < 64; ++t) {
                                         DWORD64 h = 0;
                                         SIZE_T rd = 0;
-                                        if (!ReadProcessMemory(
-                                                process,
-                                                reinterpret_cast<LPCVOID>(ctx.Rbx + DWORD64{t} * 16),
-                                                &h, sizeof(h), &rd) ||
+                                        if (!ReadProcessMemory(process,
+                                                               reinterpret_cast<LPCVOID>(
+                                                                   ctx.Rbx + DWORD64{t} * 16),
+                                                               &h, sizeof(h), &rd) ||
                                             rd != sizeof(h)) {
                                             break;
                                         }
@@ -939,7 +926,8 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                                             fmt::format_to(std::back_inserter(table), "{} ", t);
                                         }
                                     }
-                                    LOG_CRITICAL(Debug, "CRASHTYPES: registered handlers for ids: {}",
+                                    LOG_CRITICAL(Debug,
+                                                 "CRASHTYPES: registered handlers for ids: {}",
                                                  table);
                                 }
                                 // Read the same records again a moment later: if they change
@@ -976,8 +964,7 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                                                            buf[b]);
                                         }
                                     }
-                                    const DWORD64 rec_addr =
-                                        ctx.R11 + DWORD64{ctx.R12} * 48 + 0x28;
+                                    const DWORD64 rec_addr = ctx.R11 + DWORD64{ctx.R12} * 48 + 0x28;
                                     if (ReadProcessMemory(process,
                                                           reinterpret_cast<LPCVOID>(rec_addr), buf,
                                                           48, &rd) &&

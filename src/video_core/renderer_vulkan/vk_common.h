@@ -33,8 +33,8 @@
 // each of them must invalidate too - otherwise we would skip a bind that is no longer current
 // and draw with someone else's pipeline.
 #include <atomic>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 namespace Vulkan {
 inline std::atomic<std::uint64_t> g_bound_pipeline{0};
 inline std::atomic<std::uint64_t> g_bind_skipped{0};

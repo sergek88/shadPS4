@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
-#include "common/postmortem.h"
-#include <cstdlib>
-#include "common/thread.h"
 #include <condition_variable>
+#include <cstdlib>
 #include <list>
 #include <mutex>
 #include <thread>
+#include "common/postmortem.h"
+#include "common/thread.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -399,36 +399,40 @@ int PS4_SYSV_ABI sceKernelWaitEventFlag(OrbisKernelEventFlag ef, u64 bitPattern,
                                           bitPattern};
     // [debug] SHADPS4_TRACEEF=1: долгие ожидания event flag с именем потока
     static const bool s_trace_ef = std::getenv("SHADPS4_TRACEEF") != nullptr;
-    const auto tef0 = s_trace_ef ? std::chrono::steady_clock::now()
-                                 : std::chrono::steady_clock::time_point{};
+    const auto tef0 =
+        s_trace_ef ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     if (ef == nullptr) {
         {
-        if (s_trace_ef) {
-            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - tef0)
-                                .count();
-            if (ms > 300) {
-                LOG_WARNING(Kernel_Event, "TRACEEF: '{}' ef wait {}ms pattern={:#x} -> ret={:#x}",
-                            Common::GetCurrentThreadName(), ms, bitPattern, (u32)ORBIS_KERNEL_ERROR_ESRCH);
+            if (s_trace_ef) {
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - tef0)
+                                    .count();
+                if (ms > 300) {
+                    LOG_WARNING(Kernel_Event,
+                                "TRACEEF: '{}' ef wait {}ms pattern={:#x} -> ret={:#x}",
+                                Common::GetCurrentThreadName(), ms, bitPattern,
+                                (u32)ORBIS_KERNEL_ERROR_ESRCH);
+                }
             }
+            return ORBIS_KERNEL_ERROR_ESRCH;
         }
-        return ORBIS_KERNEL_ERROR_ESRCH;
-    }
     }
 
     if (bitPattern == 0) {
         {
-        if (s_trace_ef) {
-            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - tef0)
-                                .count();
-            if (ms > 300) {
-                LOG_WARNING(Kernel_Event, "TRACEEF: '{}' ef wait {}ms pattern={:#x} -> ret={:#x}",
-                            Common::GetCurrentThreadName(), ms, bitPattern, (u32)ORBIS_KERNEL_ERROR_EINVAL);
+            if (s_trace_ef) {
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - tef0)
+                                    .count();
+                if (ms > 300) {
+                    LOG_WARNING(Kernel_Event,
+                                "TRACEEF: '{}' ef wait {}ms pattern={:#x} -> ret={:#x}",
+                                Common::GetCurrentThreadName(), ms, bitPattern,
+                                (u32)ORBIS_KERNEL_ERROR_EINVAL);
+                }
             }
+            return ORBIS_KERNEL_ERROR_EINVAL;
         }
-        return ORBIS_KERNEL_ERROR_EINVAL;
-    }
     }
 
     auto wait = EventFlagInternal::WaitMode::And;

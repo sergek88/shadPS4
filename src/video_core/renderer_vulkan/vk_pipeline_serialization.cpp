@@ -6,8 +6,8 @@
 #include <cstring>
 #include <string>
 #include <type_traits>
-#include "common/scope_exit.h"
 #include "common/postmortem.h"
+#include "common/scope_exit.h"
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
