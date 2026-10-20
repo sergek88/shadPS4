@@ -1065,6 +1065,9 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
 
 #else
 
+// Debug registers are only armed on Windows.
+void ArmWriteWatch(u64 address) {}
+
 static std::string DisassembleInstruction(void* code_address) {
     char buffer[256] = "<unable to decode>";
 
